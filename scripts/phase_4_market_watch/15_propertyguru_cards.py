@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-SEARCH_URL = "https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang"
+SEARCH_URL = "https://www.propertyguru.com.sg/hdb-for-sale"
 LISTING_ID_RE = re.compile(r"/listing/(?:hdb-)?for-sale-[^/?#]+-(\d+)$", re.I)
 MONEY_RE = re.compile(r"S\$\s*([\d,]+)")
 AREA_RE = re.compile(r"\b([\d,]+)\s*sqft\b", re.I)
@@ -90,7 +90,7 @@ def parse_card_text(url: str, heading: str, card_text: str, seen_at: str) -> dic
     return {
         "listing_id": listing_id,
         "source_url": canonical_listing_url(url),
-        "area_query": "Sengkang",
+        "area_query": "Singapore",
         "title": marketed_title,
         "project_name": heading.strip() if not heading_is_address and heading.strip() != address else "",
         "address": address.strip(),

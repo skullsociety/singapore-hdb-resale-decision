@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$SearchUrl = 'https://www.propertyguru.com.sg/hdb-for-sale'
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -42,4 +44,4 @@ if (-not (Test-Receiver)) {
     }
 }
 
-Start-Process -FilePath $chrome | Out-Null
+Start-Process -FilePath $chrome -ArgumentList $SearchUrl | Out-Null

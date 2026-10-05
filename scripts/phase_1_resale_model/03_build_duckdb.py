@@ -1,4 +1,4 @@
-"""Build the Sengkang analytical DuckDB from the existing processed extracts.
+"""Build the Singapore HDB analytical DuckDB from processed official extracts.
 
 This is an offline, repeatable build. Extraction and model fitting are separate
 steps. The previous database is kept when a source or join check fails.
@@ -27,8 +27,8 @@ except ImportError as error:
 
 
 SOURCES = {
-    "transactions": "sengkang_resale_transactions.csv",
-    "properties": "sengkang_hdb_property_information.csv",
+    "transactions": "hdb_resale_transactions.csv",
+    "properties": "hdb_property_information.csv",
     "blocks": "hdb_blocks_with_coordinates.csv",
     "schools": "primary_schools_with_coordinates.csv",
     "childcare": "childcare_centres_with_coordinates.csv",
@@ -279,11 +279,11 @@ def build(project_root: Path) -> dict:
     model_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     database = data_dir / "property.duckdb"
-    parquet = model_dir / "sengkang_transaction_features.parquet"
+    parquet = model_dir / "hdb_transaction_features.parquet"
     report = report_dir / "03_duckdb_build_summary.json"
     suffix = uuid.uuid4().hex[:8]
     temporary_database = data_dir / f"property.{suffix}.tmp.duckdb"
-    temporary_parquet = model_dir / f"sengkang_transaction_features.{suffix}.tmp.parquet"
+    temporary_parquet = model_dir / f"hdb_transaction_features.{suffix}.tmp.parquet"
 
     def amenity_schema(key_name: str) -> list[tuple[str, str]]:
         return [(key_name, "VARCHAR PRIMARY KEY")] + [

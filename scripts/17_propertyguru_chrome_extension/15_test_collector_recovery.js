@@ -6,15 +6,15 @@ async function run(state) {
   const timers = [];
   const next = {clicks: 0, click() { this.clicks += 1; }};
   const location = {
-    href: 'https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang',
+    href: 'https://www.propertyguru.com.sg/hdb-for-sale',
     assigned: null,
     assign(url) { this.assigned = url; }
   };
   const site = {
     pageNumber: () => 1,
     nextLink: () => next,
-    pageUrl: page => `https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang/${page}`,
-    matches: url => url.startsWith('https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang/')
+    pageUrl: page => `https://www.propertyguru.com.sg/hdb-for-sale/${page}`,
+    matches: url => url.startsWith('https://www.propertyguru.com.sg/hdb-for-sale/')
   };
   const context = {
     LISTING_SITES: {propertyguru: site},
@@ -53,7 +53,7 @@ async function run(state) {
   assert.equal(recovered.timers.length, 1);
   await recovered.timers[0].fn();
   assert.equal(recovered.location.assigned,
-    'https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang/2');
+    'https://www.propertyguru.com.sg/hdb-for-sale/2');
 
   const legacy = await run({...base, advanceAt: undefined});
   assert.equal(legacy.state().active, false);

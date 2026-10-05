@@ -48,7 +48,7 @@ def padded_numeric_domain(values: pd.Series) -> list[float]:
 def render(query) -> None:
     st.header("Neighbourhood and feature explorer")
     st.caption(
-        "Explore registered Sengkang resale transactions. Relationships are descriptive associations, "
+        "Explore registered Singapore HDB resale transactions. Relationships are descriptive associations, "
         "not proof that a feature caused a price difference."
     )
     available = set(query(

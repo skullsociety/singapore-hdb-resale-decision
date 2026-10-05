@@ -13,8 +13,8 @@ It creates two deliberately simple, non-machine-learning benchmarks:
 
 | Model | Prediction method |
 |---|---|
-| `recent_flat_type_median_24m` | Median of earlier Sengkang transactions of the same flat type from the previous 24 months. |
-| `comparable_sales_v1` | Median of earlier recent sales that first match the same block, then nearby similar flats, then similar Sengkang flats, with a documented fallback. |
+| `recent_flat_type_median_24m` | Median of earlier same-town transactions of the same flat type from the previous 24 months. |
+| `comparable_sales_v1` | Median of earlier recent sales that first match the same block, then nearby similar flats, then similar flats in the same town, with a documented fallback. |
 
 For every validation or test transaction, both models may use only records from
 earlier calendar months. Records in the same month are withheld together because

@@ -1,8 +1,8 @@
 """Download and validate the official HDB datasets used by Phase 1.
 
 Uses only the Python standard library. Raw files are kept unchanged after
-download; smaller Sengkang subsets and a machine-readable manifest are derived
-from them.
+download; nationwide processed copies, legacy pilot subsets, and a
+machine-readable manifest are derived from them.
 """
 
 from __future__ import annotations
@@ -214,7 +214,20 @@ def write_markdown_summary(manifest: dict[str, Any], destination: Path) -> None:
             f"{sum(properties['blank_counts'].values()):,} |"
         ),
         "",
-        "## Pilot subsets",
+        "## Nationwide processed files",
+        "",
+        "| File | Rows | Selection rule |",
+        "|---|---:|---|",
+        (
+            "| `data/processed/hdb_resale_transactions.csv` | "
+            f"{derived['hdb_resale_transactions']['row_count']:,} | All published towns |"
+        ),
+        (
+            "| `data/processed/hdb_property_information.csv` | "
+            f"{derived['hdb_property_information']['row_count']:,} | All published HDB blocks |"
+        ),
+        "",
+        "## Legacy pilot subsets",
         "",
         "| File | Rows | Selection rule |",
         "|---|---:|---|",
@@ -239,11 +252,11 @@ def write_markdown_summary(manifest: dict[str, Any], destination: Path) -> None:
         "- Confirmed the expected source columns are present.",
         "- Counted blank cells by column.",
         "- Recorded SHA-256 checksums so later runs can detect source changes.",
-        "- Confirmed each derived pilot subset contains rows.",
+        "- Confirmed each nationwide processed file and legacy pilot subset contains rows.",
         "",
         "## Current boundary",
         "",
-        "These files are extracted and structurally validated. Address normalization, "
+        "The nationwide files are extracted and structurally validated. Address normalization, "
         "joining transactions to blocks, geocoding, comparable selection, and model "
         "evaluation remain the next Phase 1 steps.",
         "",
@@ -285,6 +298,11 @@ def extract(project_root: Path, force: bool) -> dict[str, Any]:
     resale_path = raw_dir / str(DATASETS["hdb_resale_transactions_2017_onwards"]["filename"])
     property_path = raw_dir / str(DATASETS["hdb_property_information"]["filename"])
 
+    nationwide_resale_path = processed_dir / "hdb_resale_transactions.csv"
+    nationwide_resale_count = filter_csv(resale_path, nationwide_resale_path, lambda _row: True)
+    nationwide_property_path = processed_dir / "hdb_property_information.csv"
+    nationwide_property_count = filter_csv(property_path, nationwide_property_path, lambda _row: True)
+
     sengkang_resale_path = processed_dir / "sengkang_resale_transactions.csv"
     sengkang_count = filter_csv(
         resale_path,
@@ -306,6 +324,8 @@ def extract(project_root: Path, force: bool) -> dict[str, Any]:
     )
 
     for key, path, rows in (
+        ("hdb_resale_transactions", nationwide_resale_path, nationwide_resale_count),
+        ("hdb_property_information", nationwide_property_path, nationwide_property_count),
         ("sengkang_resale_transactions", sengkang_resale_path, sengkang_count),
         ("fernvale_resale_transactions", fernvale_resale_path, fernvale_count),
         ("sengkang_hdb_property_information", sengkang_property_path, sengkang_property_count),

@@ -17,7 +17,7 @@ import numpy as np
 
 
 PHASE = "phase_4_market_watch"
-MODEL_ID = "PILOT_RIDGE_COMPARABLE_BLEND_V1"
+MODEL_ID = "NATIONAL_RIDGE_COMPARABLE_BLEND_V1"
 STREET_WORDS = {
     "AVE": "AVENUE", "AV": "AVENUE", "CRES": "CRESCENT", "DR": "DRIVE",
     "LN": "LANE", "RD": "ROAD", "ST": "STREET", "NTH": "NORTH",
@@ -77,14 +77,20 @@ def property_reference(property_db: Path) -> tuple[dict, dict, list[dict], dict]
             FROM hdb_blocks b
             JOIN hdb_properties p USING (block_id)
             JOIN block_location_features l USING (block_id)
-            WHERE p.bldg_contract_town = 'SK' AND p.residential
+            WHERE p.residential
         """)
         transactions = read_rows(con, """
-            SELECT * FROM transaction_features WHERE town = 'SENGKANG'
+            SELECT * FROM transaction_features
             ORDER BY transaction_month
         """)
         run_id = con.execute("SELECT run_id FROM pipeline_runs ORDER BY built_at_utc DESC LIMIT 1").fetchone()[0]
         latest_month = con.execute("SELECT MAX(transaction_month) FROM resale_transactions").fetchone()[0]
+    town_counts = defaultdict(Counter)
+    for transaction in transactions:
+        town_counts[transaction["block_id"]][transaction["town"]] += 1
+    for block in blocks:
+        counts = town_counts.get(block["block_id"])
+        block["town"] = counts.most_common(1)[0][0] if counts else None
     exact = defaultdict(list)
     by_block = defaultdict(list)
     for block in blocks:
@@ -120,11 +126,13 @@ def match_listing(listing: dict, exact: dict, by_block: dict) -> dict:
             "matched_block": None, "matched_street": None, "review_note": note}
 
 
-def infer_flat_type(area: float | None, block_id: str, transactions: list[dict]) -> tuple[str | None, str, float | None]:
+def infer_flat_type(area: float | None, block_id: str, town: str | None,
+                    transactions: list[dict]) -> tuple[str | None, str, float | None]:
     if not area:
         return None, "missing_floor_area", None
     same_block = [row for row in transactions if row["block_id"] == block_id]
-    pool = same_block if same_block else transactions
+    same_town = [row for row in transactions if town and row["town"] == town]
+    pool = same_block or same_town or transactions
     grouped = defaultdict(list)
     for row in pool:
         grouped[row["flat_type"]].append(float(row["floor_area_sqm"]))
@@ -139,7 +147,7 @@ def infer_flat_type(area: float | None, block_id: str, transactions: list[dict])
     tolerance = max(8.0, median * 0.12)
     if gap > tolerance:
         return None, "area_outside_observed_types", gap
-    method = "same_block_area" if same_block else "sengkang_area"
+    method = "same_block_area" if same_block else "same_town_area" if same_town else "national_area"
     return flat_type, method, gap
 
 
@@ -201,7 +209,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
             source = {
                 "transaction_id": feature["listing_key"] + ":" + scenario["scenario"],
                 "block_id": block["block_id"], "transaction_month": month,
-                "dataset_split": "listing_scenario", "town": "SENGKANG",
+                "dataset_split": "listing_scenario", "town": block["town"],
                 "flat_type": feature["inferred_flat_type"], "flat_model": scenario["flat_model"],
                 "floor_area_sqm": float(feature["floor_area_sqm"]),
                 "storey_range": scenario["storey_range"], "storey_midpoint": scenario["storey_midpoint"],
@@ -371,7 +379,7 @@ def build(root: Path) -> dict:
                             "listing_id": listing["listing_id"], **match})
             block = block_lookup.get(match["block_id"])
             inferred_type, type_method, area_gap = infer_flat_type(
-                listing.get("floor_area_sqm"), match["block_id"], transactions
+                listing.get("floor_area_sqm"), match["block_id"], block.get("town"), transactions
             ) if block else (None, "unmatched_block", None)
             feature = {
                 "source_site": listing["source_site"], "run_id": listing["run_id"],
@@ -406,7 +414,7 @@ def build(root: Path) -> dict:
                    "Listing cards do not provide exact floor or verified flat model.",
                    "Valuations use observed low, middle, and high same-block storey scenarios.",
                    "Unmatched listings and listings without adequate same-block history are not valued.",
-                   "These are Sengkang research estimates, not official valuations.",
+                   "These are research estimates, not official HDB or professional valuations.",
                ]}
     report = root / "reports" / PHASE / "19_listing_analysis_summary.json"
     report.parent.mkdir(parents=True, exist_ok=True)

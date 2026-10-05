@@ -470,7 +470,7 @@ def run(project_root: Path) -> dict:
         "single_town_scope": town_count == 1,
         "criteria": criteria,
         "limitations": [
-            "Current data is a one-town Sengkang pilot and does not establish performance across all HDB towns.",
+            "Overall metrics can hide weaker performance in individual towns; review town-level results before release.",
             "Observed test coverage is below the mean nominal level; passing the five-percentage-point pilot tolerance does not remove undercoverage risk. Use ranges as estimates, not official valuations.",
             "The validation calibration window was reserved for residual calibration, but the existing selected model had previously been chosen using the full validation period; test coverage is therefore the final independent check.",
             "Comparable evidence ranks registered sales by transparent distance, size, floor, and recency criteria; it does not observe renovation, unit condition, orientation, or view.",

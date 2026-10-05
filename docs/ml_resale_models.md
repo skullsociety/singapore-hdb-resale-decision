@@ -115,7 +115,7 @@ The recent-price model won validation but failed the test gate. Its test predict
 | `data/model_ready/08_hybrid_predictions.csv` | Per-transaction predictions for each candidate and period. |
 | `models/phase_1_resale_model/08_ridge_recent_trend.joblib` | Experimental recent-price Ridge pipeline and feature definition. |
 
-## Accepted Sengkang pilot: steps 09 and 10
+## National candidate: steps 09 and 10
 
 Run step 09 after the numbered build, baseline, model, and blend steps:
 
@@ -125,7 +125,7 @@ Run step 09 after the numbered build, baseline, model, and blend steps:
 
 This keeps the accepted 45% Ridge / 55% comparable-sales point estimate. It chooses between asymmetric and symmetric residual ranges using an earlier/later validation split, then calibrates the chosen range on all validation sales. It backtests the point and range on later sales and writes `reports/phase_1_resale_model/09_blend_price_ranges.csv`, `reports/phase_1_resale_model/09_blend_backtest_metrics.csv`, `reports/phase_1_resale_model/09_blend_error_by_segment.csv`, `reports/phase_1_resale_model/09_blend_calibration_check.csv`, and `reports/phase_1_resale_model/09_blend_release.json`. Matching `pilot_blend_*` tables are stored in DuckDB. The latest test MAE is S$35,790; observed range coverage is 97.02% against 95.54% mean nominal coverage, with S$247,683 mean width. The test results were already examined while developing the pilot, so fresh future sales are needed for a stronger release check.
 
-Run step 10 to estimate one known Sengkang flat:
+Run step 10 to estimate one known HDB flat:
 
 ```powershell
 .\scripts\phase_1_resale_model\10_run_flat_valuation.ps1 -Block '106' -Street 'RIVERVALE WALK' -FlatType '4 ROOM' -FloorAreaSqm 100 -StoreyRange '01 TO 03' -FlatModel 'Model A' -RemainingLeaseYears 71.5 -Output 'reports/phase_1_resale_model/10_my_estimate.json'

@@ -2,8 +2,8 @@
 globalThis.LISTING_SITES = Object.freeze({
   propertyguru: {
     id: 'propertyguru',
-    name: 'PropertyGuru Sengkang HDB',
-    startUrl: 'https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang',
+    name: 'PropertyGuru Singapore HDB',
+    startUrl: 'https://www.propertyguru.com.sg/hdb-for-sale',
     pageUrl(page) {
       return page === 1 ? this.startUrl : `${this.startUrl}/${page}`;
     },
@@ -11,12 +11,12 @@ globalThis.LISTING_SITES = Object.freeze({
       try {
         const parsed = new URL(url);
         return parsed.origin === 'https://www.propertyguru.com.sg' &&
-          /^\/hdb-for-sale\/in-sengkang(?:\/\d+)?\/?$/.test(parsed.pathname);
+          /^\/hdb-for-sale(?:\/\d+)?\/?$/.test(parsed.pathname);
       } catch { return false; }
     },
     pageNumber(url) {
       if (!this.matches(url)) return null;
-      const match = new URL(url).pathname.match(/\/hdb-for-sale\/in-sengkang(?:\/(\d+))?\/?$/);
+      const match = new URL(url).pathname.match(/\/hdb-for-sale(?:\/(\d+))?\/?$/);
       return Number(match?.[1] || 1);
     },
     readPage(doc) {
@@ -26,7 +26,7 @@ globalThis.LISTING_SITES = Object.freeze({
         text: card.innerText || ''
       })).filter(card => card.url.includes('/listing/hdb-for-sale-'));
       const heading = doc.querySelector('h1')?.innerText || '';
-      const countMatch = heading.match(/([\d,]+)\s+HDB(?: Flats)? for Sale in Sengkang/i);
+      const countMatch = heading.match(/([\d,]+)\s+HDB(?:\s+Flats?)?\s+for Sale(?:\s+in\s+Singapore)?/i);
       const advertisedCount = Number(countMatch?.[1]?.replaceAll(',', ''));
       const pageNumbers = [...doc.querySelectorAll('a[da-id^="hui-pagination-btn-page-"]')]
         .map(link => Number(link.getAttribute('da-id')?.split('-').at(-1)))

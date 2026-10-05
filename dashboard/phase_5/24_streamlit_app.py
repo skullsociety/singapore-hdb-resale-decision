@@ -43,6 +43,32 @@ def load_feature_explorer_module():
 FEATURE_EXPLORER = load_feature_explorer_module()
 
 
+def load_future_scenario_module():
+    path = PROJECT_ROOT / "dashboard" / "phase_7" / "29_future_scenario_explorer.py"
+    spec = importlib.util.spec_from_file_location("phase7_future_scenarios", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load future scenario explorer: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+FUTURE_SCENARIOS = load_future_scenario_module()
+
+
+def load_decision_planner_module():
+    path = APP_DIR / "24_decision_planner.py"
+    spec = importlib.util.spec_from_file_location("phase5_decision_planner", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+DECISION_PLANNER = load_decision_planner_module()
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def query(sql: str, parameters: tuple = ()):
     with duckdb.connect(str(DATABASE), read_only=True) as connection:
@@ -347,9 +373,7 @@ def report_page() -> None:
     selected_labels = st.multiselect("Select one to four listings", list(choices), max_selections=4)
     report_reference = st.text_input("Report reference (optional)")
     notes = st.text_area("Comparison notes (optional)")
-    upload = st.file_uploader(
-        "Attach a downloaded buyer or seller plan JSON (optional)", type=["json"]
-    )
+    upload = st.file_uploader("Attach a prior buyer or seller plan JSON (optional)", type=["json"])
     if not selected_labels:
         st.info("Choose at least one listing to prepare a report.")
         return
@@ -373,6 +397,8 @@ def report_page() -> None:
         grouped.setdefault(key, []).append(row)
     try:
         plan = REPORT.parse_planning_upload(upload.getvalue() if upload else None)
+        if plan is None:
+            plan = st.session_state.get("seller_plan") or st.session_state.get("buyer_plan")
         document = REPORT.build_report(
             selected, grouped, report_reference=report_reference,
             comparison_notes=notes, planning_result=plan,
@@ -394,7 +420,7 @@ page = st.sidebar.radio(
     [
         "Market overview", "Opportunity finder", "Listing details",
         "Neighbourhood and features", "Market changes",
-        "Data and model quality", "Comparison report",
+        "Future-price scenarios", "Buy and sell planning", "Data and model quality", "Comparison report",
     ],
 )
 st.sidebar.caption(f"Database: {DATABASE.name}")
@@ -403,6 +429,8 @@ st.sidebar.caption(f"Database: {DATABASE.name}")
     "Opportunity finder": opportunity_page,
     "Listing details": listing_detail_page,
     "Neighbourhood and features": lambda: FEATURE_EXPLORER.render(query),
+    "Future-price scenarios": lambda: FUTURE_SCENARIOS.render(query),
+    "Buy and sell planning": DECISION_PLANNER.render,
     "Market changes": changes_page,
     "Data and model quality": quality_page,
     "Comparison report": report_page,

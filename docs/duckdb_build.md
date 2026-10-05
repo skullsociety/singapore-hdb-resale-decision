@@ -16,7 +16,7 @@ Outputs:
 | File | Purpose |
 |---|---|
 | `data/property.duckdb` | Trusted source, block location, transaction feature, and build history tables. |
-| `data/model_ready/sengkang_transaction_features.parquet` | Portable copy of the transaction feature table. |
+| `data/model_ready/hdb_transaction_features.parquet` | Portable copy of the nationwide transaction feature table. |
 | `reports/phase_1_resale_model/03_duckdb_build_summary.json` | Source and table counts, split counts, exclusions, and run ID. |
 
 Each rerun creates a fresh database in a temporary file. The existing database

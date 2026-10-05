@@ -15,10 +15,10 @@ import duckdb
 
 PHASE = "phase_4_market_watch"
 DEFAULT_PROFILE = {
-    "profile_id": "sengkang_value_watch_default",
-    "profile_name": "Sengkang value watch",
+    "profile_id": "singapore_hdb_value_watch_default",
+    "profile_name": "Singapore HDB value watch",
     "source_site": "propertyguru",
-    "town": "SENGKANG",
+    "town": "ALL",
     "maximum_price_sgd": None,
     "minimum_floor_area_sqm": None,
     "flat_types": [],

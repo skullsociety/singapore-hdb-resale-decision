@@ -1,6 +1,6 @@
 # Singapore HDB Resale Price Research
 
-A local, reproducible data science project for exploring HDB resale transactions, comparable sales, and rough resale-price estimates. The current Phase 1 dataset and evaluation are a **Sengkang pilot**. Estimates are research outputs, not official HDB or professional valuations.
+A local, reproducible data science project for exploring Singapore HDB resale transactions, comparable sales, and rough resale-price estimates. New workflow runs cover all published towns. The recorded metrics in this repository still describe the earlier Sengkang pilot until the nationwide workflow is rerun and reviewed. Estimates are research outputs, not official HDB or professional valuations.
 
 ## What it does
 
@@ -14,7 +14,20 @@ The workflow:
 6. Plans a buyer's resale purchase cash, CPF, stamp duties, mortgage payment, and offer scenarios from user supplied assumptions.
 7. Estimates a seller's cash proceeds and CPF refund under three sale prices, with an optional next-home comparison.
 
-The project has local browser forms for buyer and seller planning. The Chrome extension collects Sengkang HDB search cards when started in regular Chrome. There is no hosted public website, complete live listings feed, or automatic scheduler.
+The project has a local Streamlit dashboard with buyer and seller planning, plus a future-price scenario explorer. The Chrome extension collects Singapore HDB search cards when started in regular Chrome. There is no hosted public website, complete live listings feed, or automatic scheduler.
+
+## Current status and next phase
+
+Phases 1–7 now support nationwide HDB inputs. The next operational step is to run and validate the full national rebuild, followed by **multi-source data operations**:
+
+1. Use the local Control Center to run collection, processing and dashboard workflows.
+2. Define one source-independent listing contract and collection-run registry.
+3. Automate official APIs, licensed feeds, or permitted direct HTTP sources where available.
+4. Add portal-specific adapters for additional property sites without changing downstream tables.
+5. Keep the Chrome extension as a fallback for sites that require a normal browser session.
+6. Monitor transaction, block, amenity, comparable-sale and model coverage by town.
+
+Automation does not mean bypassing access challenges. Each source must have a documented access method, rate limit, terms/permission record, parser test and coverage check. A source that cannot be collected reliably should fail independently without blocking the official-data refresh or erasing the last valid snapshot.
 
 ## Requirements
 
@@ -53,25 +66,15 @@ Open PowerShell in the project root (`PropertyProject`) and run the steps in ord
 # 8. Experiment with a Ridge/comparable blend and prior-price features
 .\scripts\phase_1_resale_model\08_run_hybrid_experiment.ps1
 
-# 9. Calibrate the accepted Sengkang blend and review its backtest
+# 9. Calibrate the national candidate blend and review its backtest
 .\scripts\phase_1_resale_model\09_run_blend_calibration.ps1
 
-# 10. Estimate a single flat using the saved pilot configuration
+# 10. Estimate a single flat using the saved national candidate configuration
 .\scripts\phase_1_resale_model\10_run_flat_valuation.ps1 -Block '106' -Street 'RIVERVALE WALK' -FlatType '4 ROOM' -FloorAreaSqm 100 -StoreyRange '01 TO 03' -FlatModel 'Model A' -RemainingLeaseYears 71.5
 
-# 11. Plan a buyer's purchase using editable assumptions
-.\scripts\phase_2_buyer_planner\11_run_buyer_planner.ps1 -InputFile '.\data\reference\11_buyer_inputs.example.json' -OutputFile '.\reports\phase_2_buyer_planner\11_buyer_plan_example.json'
+# 11–14. Use the Buy and sell planning page in the dashboard after starting it in Step 24.
 
-# 12. Open the local buyer form in your browser
-.\scripts\phase_2_buyer_planner\12_run_buyer_web_form.ps1
-
-# 13. Calculate seller proceeds from editable example inputs
-.\scripts\phase_3_seller_planner\13_run_seller_planner.ps1 -InputFile '.\data\reference\13_seller_inputs.example.json' -OutputFile '.\reports\phase_3_seller_planner\13_seller_plan_example.json'
-
-# 14. On the same local website, click "Seller proceeds" or open:
-# http://127.0.0.1:8788/seller
-
-# 15. Start the local receiver for the Sengkang Chrome extension
+# 15. Start the local receiver for the Singapore HDB Chrome extension
 .\scripts\phase_4_market_watch\15_run_propertyguru_browser.ps1
 ```
 
@@ -109,20 +112,10 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Calibrates and backtests the selected price estimate. |
 | `scripts/phase_1_resale_model/10_run_flat_valuation.ps1` | Starts a valuation for one flat. |
 | `scripts/phase_1_resale_model/10_predict_flat.py` | Produces the single-flat estimate and supporting evidence. |
-| `scripts/phase_2_buyer_planner/11_run_buyer_planner.ps1` | Runs a buyer plan from an input file. |
 | `scripts/phase_2_buyer_planner/11_buyer_cost_planner.py` | Calculates buyer cash, CPF, duties, and loan scenarios. |
 | `scripts/phase_2_buyer_planner/11_test_buyer_cost_planner.py` | Tests the buyer calculations. |
-| `scripts/phase_2_buyer_planner/12_run_buyer_web_form.ps1` | Starts the local buyer and seller website. |
-| `scripts/phase_2_buyer_planner/12_buyer_web_form.py` | Serves the local forms and calls their calculators. |
-| `scripts/phase_2_buyer_planner/12_test_buyer_web_form.py` | Tests the local form server. |
-| `scripts/phase_2_buyer_planner/12_test_buyer_validation.js` | Tests buyer form input checks. |
-| `web/12_buyer_form.js` | Handles buyer form inputs and displays its result. |
-| `web/12_buyer_validation.js` | Checks buyer inputs in the browser. |
-| `scripts/phase_3_seller_planner/13_run_seller_planner.ps1` | Runs a seller plan from an input file. |
 | `scripts/phase_3_seller_planner/13_seller_proceeds_planner.py` | Calculates sale proceeds, CPF refunds, and shortfalls. |
 | `scripts/phase_3_seller_planner/13_test_seller_proceeds_planner.py` | Tests the seller calculations. |
-| `scripts/phase_3_seller_planner/14_test_seller_web_form.py` | Tests the seller page and form server. |
-| `web/14_seller_form.js` | Handles seller form inputs and displays its result. |
 | `scripts/phase_4_market_watch/15_open_chrome_with_collector.ps1` | Starts the listing receiver if needed, then opens Chrome. |
 | `scripts/phase_4_market_watch/15_run_propertyguru_browser.ps1` | Starts only the listing receiver. |
 | `scripts/phase_4_market_watch/15_receive_propertyguru_browser.py` | Validates extension data and saves listings to DuckDB. |
@@ -146,6 +139,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_5_stakeholder_dashboard/24_run_dashboard.ps1` | Starts the local Streamlit dashboard on this computer. |
 | `scripts/phase_5_stakeholder_dashboard/24_test_dashboard.py` | Opens the dashboard in Streamlit's test runner and checks for startup errors. |
 | `dashboard/phase_5/24_streamlit_app.py` | Provides the interactive overview, listing, change, quality, and report pages. |
+| `dashboard/phase_5/24_decision_planner.py` | Provides the combined buyer and seller planning page and passes inputs to the existing calculation modules. |
 | `dashboard/phase_5/25_agent_report.py` | Creates the self-contained printable listing comparison report in memory. |
 | `scripts/phase_5_stakeholder_dashboard/25_test_agent_report.py` | Tests report safety, selection limits, and planning-file input. |
 | `scripts/phase_6_neighbourhood_explorer/26_run_feature_explorer_build.ps1` | Starts the neighbourhood and feature-explorer data build. |
@@ -153,28 +147,27 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_6_neighbourhood_explorer/26_test_feature_explorer.py` | Tests explorer views, transaction integrity, association scope, and block summaries. |
 | `dashboard/phase_6/27_feature_explorer.py` | Renders transaction trends, a distribution, a map, and feature relationships. |
 | `scripts/phase_6_neighbourhood_explorer/27_test_feature_explorer_dashboard.py` | Tests that the feature-explorer dashboard page opens successfully. |
+| `scripts/phase_7_future_scenarios/28_run_future_scenario_build.ps1` | Starts the historical evidence and scenario backtest build. |
+| `scripts/phase_7_future_scenarios/28_build_future_scenario_evidence.py` | Estimates the observed lease association and backtests one-, three-, and five-year ranges using matched repeat sales. |
+| `scripts/phase_7_future_scenarios/28_test_future_scenario_evidence.py` | Tests the Phase 7 evidence views, backtest values, scenario formula, and loan calculation. |
+| `dashboard/phase_7/29_future_scenario_explorer.py` | Renders editable future-price scenarios, uncertainty bands, financing sensitivity, and historical backtests. |
+| `scripts/phase_7_future_scenarios/29_test_future_scenario_dashboard.py` | Tests that the future-price scenario dashboard page opens successfully. |
+| `scripts/phase_8_desktop_app/30_run_control_center.ps1` | Opens the Windows Control Center without a console window. |
+| `scripts/phase_8_desktop_app/30_control_center.py` | Provides the desktop interface for collection, processing, listing analysis and dashboard controls. |
+| `scripts/phase_8_desktop_app/30_build_control_center_exe.ps1` | Optionally packages the Control Center as a Windows executable with PyInstaller. |
+| `scripts/phase_8_desktop_app/30_test_control_center.py` | Tests workflow definitions, command order and OneMap-token requirements. |
 
 Step 02 reuses cached HDB block geocoding results, but refreshes its amenity and supporting source extracts when rerun. Re-run steps 03–09 after refreshed source data so the database, features, baselines, models, and accepted pilot range are rebuilt. Step 10 prices one flat and can be rerun whenever needed.
 
-Step 11 is independent of the database. Copy the example JSON to `reports/phase_2_buyer_planner/11_my_inputs.json`, replace the example figures with your own, then run step 11 with that file. These personal input and output files are ignored by Git. Enter the applicable ABSD rate explicitly, including `0` only if appropriate. Enter an HDB Request for Value result as `hdb_value_sgd` with `value_status: "official"`, or clearly mark a planning assumption as `"assumed"`. The step 10 model range can be copied into `fair_value_lower_sgd` and `fair_value_upper_sgd` for comparison; it is not HDB's value.
+## Buy and sell planning (steps 11–14)
 
-### Easier input: local buyer form
+Choose **Buy and sell planning** in the Streamlit dashboard. The buyer tab calculates cash, CPF, duties, loan payments, offer scenarios and an affordability screen from the assumptions you enter. The seller tab calculates cash proceeds, CPF refund, shortfalls and three sale-price scenarios. If you calculate a buyer plan first, the seller tab can use its asking-price cash and CPF needs for the next-home comparison.
 
-Run `.\scripts\phase_2_buyer_planner\12_run_buyer_web_form.ps1` in PowerShell. Your browser opens `http://127.0.0.1:8788/`. Keep PowerShell open while using the form; press **Ctrl+C** there to stop it. If port 8788 is busy, use `.\scripts\phase_2_buyer_planner\12_run_buyer_web_form.ps1 -Port 8789`. The form asks for the flat price, financing and available funds in plain language, with optional costs tucked under expandable sections. It calls the same Python calculator as step 11, so it does not need a JSON input file.
+The calculation runs locally and does not save inputs. Enter the applicable ABSD rate explicitly, including `0` only if appropriate. Use an HDB Request for Value result when available; otherwise mark the value as an assumption. The research price estimate is not HDB's official value. Use current lender, CPF and HDB statements for loan, CPF refund and sale-cost figures. The estimate is for a **whole-flat sale**, not a sale of only one owner's share.
 
-You can load a saved `reports/phase_1_resale_model/10_*.json` estimate in the form to fill its fair-price range; that file is read in the browser and is not uploaded. HDB value remains a separate field. Results appear on the page and are not saved automatically. After calculating, the optional **Compare with your documents** section lets you choose the matching price scenario and enter independently checked figures from an HFE letter, bank offer, HDB Request for Value, CPF or final purchase documents. It shows plan, document figure and difference; it does not verify a document or recalculate the plan. Blank figures are skipped. **Download result JSON** saves a copy only when you click it, including the document comparison if you have completed one. The server listens only on this computer (`127.0.0.1`); it does not contact HDB, CPF, a bank, or a remote service. The official-source links in the form open those sites only when clicked. The form requires no additional Python packages.
+## Singapore HDB listings: Chrome extension (step 15)
 
-### Seller proceeds planner
-
-Step 13 accepts expected, conservative and optimistic sale prices, the outstanding loan, CPF refund for all owners, and selling costs. It returns cash proceeds and CPF returned separately, plus loan, CPF and fee shortfalls. If low or high prices are blank, it uses illustrative prices 5% either side of the expected price. Enter either the CPF refund total from CPF's Home ownership dashboard or its principal and accrued-interest components. See [seller rule notes](data/reference/13_seller_policy_notes.md) for the official references and limitations.
-
-Step 14 is the **Seller proceeds** page on the same local server started by step 12. Open [http://127.0.0.1:8788/seller](http://127.0.0.1:8788/seller) or click the link in the buyer form. No second port is needed. You can enter the next home's cash and CPF needs or load a downloaded step 12 buyer plan; the page uses its asking-price scenario. That comparison does not determine CPF reuse, second HDB loan eligibility, or the timing of sale proceeds. Downloading the seller result is optional; entries are not saved automatically.
-
-The estimate is for a **whole-flat sale**, not a sale of only one owner's share. Check the loan balance with HDB or your bank and the required refund for every owner in CPF's Home ownership dashboard. If a sale price cannot cover the loan, or if the CPF refund is short, confirm the settlement treatment with HDB and CPF before relying on the result.
-
-## Sengkang listings: Chrome extension (step 15)
-
-Step 15 uses a Chrome extension in your regular browser and a local receiver. PropertyGuru Sengkang HDB is the first supported site. Each site has its own page-reading adapter in `scripts/17_propertyguru_chrome_extension/sites.js`; the collection flow and database table are shared. The extension folder retains its original name because Chrome has already loaded it from that path. A future site needs an adapter, a narrow page match in the extension manifest, and a source parser/registration in the receiver. Adding an adapter does not grant access to a site or guarantee its pages are readable.
+Step 15 uses a Chrome extension in your regular browser and a local receiver. PropertyGuru Singapore HDB results are the first supported source. Each site has its own page-reading adapter in `scripts/17_propertyguru_chrome_extension/sites.js`; the collection flow and database table are shared. The extension folder retains its original name because Chrome has already loaded it from that path. A future site needs an adapter, a narrow page match in the extension manifest, and a source parser/registration in the receiver. Adding an adapter does not grant access to a site or guarantee its pages are readable.
 
 The numbered files for this step have separate jobs: `15_open_chrome_with_collector.ps1` opens Chrome and starts the receiver; `15_run_propertyguru_browser.ps1` starts only the receiver; `15_receive_propertyguru_browser.py` validates and saves cards; `15_propertyguru_cards.py` parses PropertyGuru cards. The `15_test_*.py` and extension `15_test_*.js` files check those parts. Step 16, `16_import_legacy_propertyguru.py`, was used once to move an older 38-page JSON run into DuckDB; it is not part of normal collection.
 
@@ -183,8 +176,8 @@ Each time you want a snapshot, start the receiver, open a supported results tab,
 If the popup remains on a saved page, first check that the receiver window is still running. The popup now flags an offline receiver. Reloading a tab or extension no longer loses the scheduled next page in a current run; an older run without recovery state stops and asks you to start again from page 1.
 
 1. Open Chrome through the **Chrome + Property Collector** desktop shortcut. It starts the local receiver if needed, then opens your normal Chrome profile. You can also start the receiver manually: in PowerShell, run `cd "C:\Users\temas\Documents\PropertyProject"` then `.\scripts\phase_4_market_watch\15_run_propertyguru_browser.ps1` and leave that window open. The receiver listens on `127.0.0.1:8771` only.
-2. In Chrome, visit `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select `C:\Users\temas\Documents\PropertyProject\scripts\17_propertyguru_chrome_extension`. If already installed, click **Reload** on the extension after updating its files. Current access is limited to the local receiver and Sengkang HDB results pages.
-3. Open `https://www.propertyguru.com.sg/hdb-for-sale/in-sengkang` in Chrome, click the extension icon, then **Start from page 1**. Keep Chrome running until the extension says Finished or Stopped. The shortcut-launched receiver stays running after Chrome closes; opening Chrome through a different shortcut will not start it. Disconnect DBeaver from `listings.db` before collecting, since its open connection can lock the database file.
+2. In Chrome, visit `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select `C:\Users\temas\Documents\PropertyProject\scripts\17_propertyguru_chrome_extension`. If already installed, click **Reload** on the extension after updating its files. Current access is limited to the local receiver and PropertyGuru HDB results pages.
+3. Open `https://www.propertyguru.com.sg/hdb-for-sale` in Chrome, click the extension icon, then **Start from page 1**. Keep Chrome running until the extension says Finished or Stopped. The shortcut-launched receiver stays running after Chrome closes; opening Chrome through a different shortcut will not start it. Disconnect DBeaver from `listings.db` before collecting, since its open connection can lock the database file.
 
 The receiver creates `data/listings.db` (a **DuckDB** file) on the first successful page. It contains one `listings` table for every supported site. `source_site` identifies the website; `(source_site, run_id, listing_id)` is the unique key. Repeated cards on different pages of one run merge into one row, while new runs remain available as separate snapshots. Each row stores price, address, size, other parsed card fields, the original card JSON, pages seen, and collection times. The receiver reports saved and missing pages to the extension after every page. It no longer creates listing CSV, per-page JSON, or a listing manifest file. Older listing files, if present, are historical and are not imported automatically. This database is separate from `data/property.duckdb`, which the resale-model build replaces.
 
@@ -232,7 +225,7 @@ Run this after Steps 17–19:
 .\.venv\Scripts\python.exe scripts\phase_4_market_watch\20_22_build_market_watch.py
 ```
 
-The first run uses a broad Sengkang profile: it has no budget, size or flat-type limit, requires a Step 19 estimate, needs at least three comparable sales, and treats a listing snapshot older than 14 days as stale. Its purpose is to make the complete current shortlist visible before you set your personal limits.
+The first run uses a broad Singapore HDB profile: it has no budget, size or flat-type limit, requires a Step 19 estimate, needs at least three comparable sales, and treats a listing snapshot older than 14 days as stale. Its purpose is to make the complete current shortlist visible before you set your personal limits.
 
 To use your own preferences, copy `data/reference/20_market_watch_preferences.example.json` to an untracked personal file such as `reports/phase_4_market_watch/20_my_preferences.json`, edit the values, then run:
 
@@ -282,7 +275,7 @@ Open [http://127.0.0.1:8501](http://127.0.0.1:8501) if the browser does not open
 
 Step 24 uses **Streamlit**, a Python web-interface framework. Each filter or selection reruns the page code, which sends read-only SQL queries to the dashboard views and draws metrics, tables, charts, and a map in the browser. DuckDB remains an embedded file database: Streamlit loads the DuckDB Python package and opens `data/listings.db` directly. There is no separate database server to install.
 
-Step 25 is part of the Streamlit **Comparison report** page. A user selects up to four listings, may attach a buyer or seller plan JSON, add a neutral report reference, and add comparison notes. The app creates a self-contained HTML report in memory. Nothing is saved by the project until the user clicks **Download printable report**; the downloaded file can be opened in a browser and printed or saved as PDF. This supports the longer-term goal of software that an end user can operate locally without DBeaver or command-line SQL.
+Step 25 is part of the Streamlit **Comparison report** page. A user selects up to four listings, may use the current dashboard buyer or seller plan or attach an earlier planning JSON, add a neutral report reference, and add comparison notes. The app creates a self-contained HTML report in memory. Nothing is saved by the project until the user clicks **Download printable report**; the downloaded file can be opened in a browser and printed or saved as PDF. This supports the longer-term goal of software that an end user can operate locally without DBeaver or command-line SQL.
 
 The local build currently presents 753 listings, 10,271 supporting comparable rows, seven data-quality checks, and 14 model-evaluation rows. The current category counts are 275 strong candidates, 429 fairly priced, 17 negotiation candidates, 12 likely expensive, and 20 with insufficient evidence. These are research categories based on the saved snapshot and model evidence, not confirmed bargains or official valuations.
 
@@ -317,6 +310,60 @@ The current explorer covers Sengkang from January 2017 through September 2026: 1
 
 The explorer deliberately describes **associations**. A positive or negative correlation does not prove that a school, station, park, lease, floor, or another feature caused the price difference. Flat type, time, location, and overlapping characteristics can produce the observed relationship. Current amenity locations may also differ from those available on an older transaction date.
 
+## Future-price scenario explorer (steps 28–29)
+
+Disconnect `listings.db` in DBeaver and stop the dashboard before running the write step:
+
+```powershell
+.\scripts\phase_7_future_scenarios\28_run_future_scenario_build.ps1
+.\scripts\phase_5_stakeholder_dashboard\24_run_dashboard.ps1
+```
+
+Choose **Future-price scenarios** in the existing dashboard. Select a current listing or enter a starting value, choose a one-, three-, or five-year period, and edit the conservative, baseline and optimistic market-growth assumptions. The chart updates after **Update scenarios**. Use **Lines to display** to compare all scenarios or show one scenario and its range. The observed lease association and any verified flat-specific starting adjustment remain separate so users can see what drives the result.
+
+Interest rate is shown only as a financing sensitivity for the entered loan amount and term; it does not automatically raise or lower the property-price path. Supply is included indirectly in the overall market-growth assumption because the pilot has no dependable forward BTO, MOP, active-listing and household-demand series. Each scenario line is a conditional result under the chosen assumptions. Its shaded range represents historical variation among closely matched repeat sales, so a conservative line and a lower range do not mean the same thing.
+
+The current training estimate associates one fewer remaining lease year with about a 1.54% lower price after the available controls. This is an observational pilot estimate, not an HDB depreciation rule. The dated backtest produced MAE of about S$32,477, S$48,046 and S$64,271 at one, three and five years. The five-year historical band covered only 48.1% of later matched outcomes, so the app flags it as unreliable planning context. Do not use these scenarios as guaranteed appreciation, an investment return or an official valuation.
+
+## Windows Control Center (step 30)
+
+The Control Center provides one desktop interface for the existing workflows. It runs long commands in the background, streams their output into an activity log, passes the OneMap token without saving it, and prevents two processing workflows from starting at the same time.
+
+Open it from PowerShell:
+
+```powershell
+.\scripts\phase_8_desktop_app\30_run_control_center.ps1
+```
+
+Use the Control Center in the following order. Button **1–4** is a shortcut for the complete official-data and modelling sequence, so use either that button or buttons 1 through 4 individually.
+
+| Button | What it does | Scripts run |
+|---|---|---|
+| **1. Refresh data.gov.sg** | Downloads and validates the official HDB transaction and property data. | `01_run_extraction.ps1` → `01_extract_data_gov_sg.py` |
+| **2. Refresh OneMap and amenities** | Geocodes HDB blocks and refreshes location and amenity datasets. Requires a OneMap token. | `02_run_onemap_extraction.ps1` → `02_extract_onemap_locations.py` |
+| **3. Build database** | Rebuilds the nationwide DuckDB database and model-ready feature table from the collected files. | `03_run_duckdb_build.ps1` → `03_build_duckdb.py` |
+| **4. Run modelling pipeline** | Rebuilds baselines, feature analysis, models, diagnostics, hybrid evaluation, and calibration. | `04_run_baselines.ps1` through `09_run_blend_calibration.ps1` |
+| **1–4. Run full official-data refresh** | Runs buttons 1, 2, 3 and 4 in that order. This is the normal button for a complete data and model refresh. | Steps 01–09 |
+| **5. Collect PropertyGuru HDB listings (via Chrome extension)** | Starts the local listing receiver and opens Chrome directly at PropertyGuru's nationwide HDB results page. The installed extension saves PropertyGuru cards into `data/listings.db`. | `15_open_chrome_with_collector.ps1` and the Chrome extension |
+| **Browse 99.co / SRX HDB listings (function not built in yet)** | Opens the selected site's nationwide HDB results page for viewing. Collection requires a dedicated adapter, parser, tests and permitted collection method for each site. | Browser URL only |
+| **6. Process listings and dashboard data** | Matches the latest complete listing snapshot, produces estimates and rankings, then rebuilds all dashboard data. | `17_19_build_listing_analysis.py`, `20_22_build_market_watch.py`, `23_build_dashboard_views.py`, `26_run_feature_explorer_build.ps1`, `28_run_future_scenario_build.ps1` |
+| **7. Start / open dashboard** | Starts the local Streamlit dashboard and opens it in a dedicated Chrome dashboard window, including the combined Buy and sell planning page. Closing that window stops the local dashboard. | `24_run_dashboard.ps1` → `24_streamlit_app.py` |
+
+**Stop dashboard**, **Refresh status**, the OneMap help buttons and **Cancel running workflow** are support controls. They do not advance the workflow order.
+
+The OneMap section includes buttons for the official [registration page](https://www.onemap.gov.sg/apidocs/register) and [authentication guide](https://www.onemap.gov.sg/apidocs/authentication). Register an account, confirm it, generate an access token with the registered email address and password, then paste only the returned `access_token` into the masked field. OneMap currently documents each token as valid for three days. The Control Center passes the token to Step 02 for that run and does not save the token or the account password.
+
+The Control Center orchestrates the existing numbered scripts; it does not duplicate their extraction or modelling logic. Step 7 opens the dashboard in a dedicated Chrome window, so closing that window also stops the dashboard process. **Stop dashboard** closes that window and stops the process directly. Closing the Control Center while a workflow or dashboard is running asks before stopping that process. Dashboard logs are written to `.local/control_center/dashboard.log`.
+
+An executable is optional. First install PyInstaller in the project environment, then run the packaging script:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\scripts\phase_8_desktop_app\30_build_control_center_exe.ps1
+```
+
+The result is `dist/control-center/PropertyProjectControlCenter.exe`. It remains a launcher for this project checkout rather than embedding the databases, model files and Chrome extension inside one binary. Keep it inside the project folder, or set `PROPERTY_PROJECT_ROOT` to the project directory.
+
 ## OneMap account and access token
 
 Each user must obtain their own OneMap account and access token before running step 02:
@@ -331,20 +378,18 @@ The launcher passes the token to the extractor for that run and does not save it
 
 | Workflow area | Automated | Still manual / limitation |
 |---|---|---|
-| HDB data.gov.sg extracts | Step 01 calls the public data.gov.sg download API, validates required columns, preserves raw copies, and creates pilot subsets. | Existing raw HDB files are reused by default; use `-ForceDownload` to refresh them. Someone must start the script. |
+| HDB data.gov.sg extracts | Step 01 calls the public data.gov.sg download API, validates required columns, preserves raw copies, and creates nationwide processed files plus legacy pilot subsets. | Existing raw HDB files are reused by default; use `-ForceDownload` to refresh them. Someone must start the script. |
 | Supporting data.gov.sg extracts | Step 02 downloads the LTA MRT/LRT station-exit GeoJSON, MOE schools, ECDA childcare centres, and MOH CHAS clinics. | Someone must start step 02; it requires a valid OneMap token for its geocoding and location requests. |
 | OneMap data | Step 02 caches block geocoding results, reuses cached results, and saves raw theme/search responses and processed coordinate tables. | Each user must register for OneMap and supply a valid token. Token creation and renewal are not automated. Non-exact geocoding matches and amenity coverage still need review. |
 | DuckDB and features | Step 03 builds and validates the analytical database and model-ready feature data. | It is a separate command; it does not download or refresh source data. |
 | Baselines and analysis | Steps 04–05 build baselines and generate feature/price association reports. | They are separate commands and require the DuckDB build first. Associations are not causal effects. |
-| Model training and diagnostics | Steps 06–08 fit/evaluate candidate models and compare the blend. Step 09 calibrates the accepted Sengkang pilot blend and backtests its range. Step 10 prices one flat with component estimates, a range, and comparable evidence. | A person must inspect the error, subgroup, coverage, and data-quality reports before using estimates. The accepted blend is a pilot decision, not a national model approval. |
-| Buyer cost planner | Step 11 calculates purchase cash and CPF allocation, BSD, user entered ABSD, monthly repayments, offer and interest/term/renovation comparisons, and an indicative affordability ceiling. | User supplies buyer finances, applicable ABSD, loan terms, value assumption, and optional costs. It cannot determine HFE or bank approval, CPF eligibility, grants, or ABSD remission. |
-| Local buyer form | Step 12 collects the same inputs in a browser and shows the results without requiring a JSON file. It can import a Step 10 estimate range locally. | A person starts and stops the local server and confirms personal financial inputs. Nothing is saved unless the user downloads the result. |
-| Seller proceeds planner | Step 13 estimates sale cash, CPF refund, shortfalls and three price scenarios from seller-entered figures. | Loan, CPF and selling-cost amounts must be verified with HDB, CPF, the lender or other documents. It does not decide CPF shortfall treatment or loan eligibility. |
-| Local seller form | Step 14 shows the seller planner on the same local server and can read a downloaded buyer plan locally for a next-home comparison. | The buyer plan may need recalculation; sale CPF is not automatically usable CPF for a new flat. |
+| Model training and diagnostics | Steps 06–08 fit/evaluate candidate models and compare the blend. Step 09 calibrates a national candidate blend and backtests its range. Step 10 prices one flat with component estimates, a range, and comparable evidence. | A person must inspect town-level error, subgroup, coverage, and data-quality reports before accepting a national release. |
+| Buy and sell planning | The dashboard's combined planning page calculates buyer cash, CPF, BSD, user-entered ABSD, repayments, offer scenarios, seller proceeds, CPF refunds and a next-home comparison. | Users supply financial, lender, CPF and sale details. It cannot determine HFE or bank approval, CPF eligibility, grants, ABSD remission or sale settlement treatment. |
 | Scheduled refresh | Each stage has a PowerShell launcher and is rerunnable. | There is no end-to-end orchestrator, Windows Task Scheduler job, alerting, or automatic refresh cadence configured yet. |
-| Current listings and user experience | Step 15 collects Sengkang HDB search cards from the Chrome extension and deduplicates listing IDs. | Install the extension once, start the local receiver for each run, and check its coverage report. The first live run covered 38 pages and 753 unique listings; the site's displayed count differed by one. |
+| Current listings and user experience | Step 15 collects Singapore HDB search cards from the Chrome extension and deduplicates listing IDs. | Install the extension once, start the local receiver for each run, and check its coverage report. The first pilot run covered 38 pages and 753 unique listings; the site's displayed count differed by one. |
 | Dashboard and comparison report | Step 23 builds stable views, Step 24 provides the local Streamlit interface, and Step 25 generates a printable report when requested. | Rebuild Step 23 after the upstream listing analysis changes. A user must start the local app. Public online use still needs an approved deployable dataset and hosting configuration. |
-| Neighbourhood and feature explorer | Step 26 creates the explorer snapshot and views; Step 27 displays filters, charts, a map, associations, and the selected comparison group in Streamlit. | Rebuild Step 26 after Phase 1 data changes. Interpretation remains descriptive, and current coverage is Sengkang only. |
+| Neighbourhood and feature explorer | Step 26 creates the explorer snapshot and views; Step 27 displays filters, charts, a map, associations, and the selected comparison group in Streamlit. | Rebuild Step 26 after Phase 1 data changes. Interpretation remains descriptive; verify coverage town by town. |
+| Future-price scenarios | Step 28 estimates the observed lease association and matched-sale backtests; Step 29 applies user assumptions and displays price paths, empirical ranges and financing sensitivity. | Rebuild Step 28 after transaction data changes. Market growth is manual and includes any expected supply effect; validate range coverage by town and horizon. |
 
 ## Current model snapshot
 
@@ -361,16 +406,14 @@ These figures describe the current local data snapshot. Rerunning the workflow c
 | Location | Contents |
 |---|---|
 | `data/raw/` | Downloaded source snapshots. |
-| `data/processed/` | Cleaned pilot extracts and coordinate tables. |
+| `data/processed/` | Nationwide processed extracts, coordinate tables, and retained legacy pilot subsets. |
 | `data/interim/` | Resumable OneMap block geocoding cache. |
 | `data/property.duckdb` | Analytical database and model/evaluation tables. |
 | `data/model_ready/` | Model-ready feature and prediction exports. |
 | `data/reference/` | Numbered Phase 2 example inputs and dated notes linking each policy rule to official sources. |
 | `models/phase_1_resale_model/` | Fitted resale-price model artifacts. |
 | `reports/phase_*/` | Numbered outputs grouped by product phase, including extraction manifests, model metrics, diagnostics, and listing history. |
-| `implementation_plan.md` | Product phases, data sources, architecture, and current plan. |
 | `docs/` | Detailed guides for extraction, DuckDB, baselines, and model evaluation. |
-| `web/` | Numbered local buyer and seller form pages, styles, and browser logic. |
 
 Generated data files, DuckDB and SQLite databases, fitted model artifacts, generated reports, personal planning files, local browser-collection profiles, and the Python environment are ignored by Git. The small `data/reference/` policy notes and synthetic example inputs are intended to be shared.
 
@@ -399,15 +442,15 @@ There is no licence file yet. Until you choose and add one, others may view the 
 
 ## Buyer planner rules and sources
 
-Step 11 uses the residential [IRAS Buyer's Stamp Duty schedule](https://www.iras.gov.sg/taxes/stamp-duty/for-property/buying-or-acquiring-property/buyer%27s-stamp-duty-%28bsd%29) effective 15 February 2023 and takes the [ABSD rate](https://www.iras.gov.sg/taxes/stamp-duty/for-property/buying-or-acquiring-property/additional-buyer%27s-stamp-duty-%28absd%29) from the user. It applies the lower of price and HDB value when estimating loan and CPF funding, following [HDB resale financing](https://www.hdb.gov.sg/sitecore/content/hdbinfoweb/home/buying-a-flat/resale-flats/process-for-buying-a-resale-flat/resale-flat-planning/mode-of-financing) and [CPF down-payment guidance](https://www.cpf.gov.sg/service/article/can-i-use-my-cpf-savings-for-the-down-payment-of-my-property). [MoneySense's affordability guide](https://www.moneysense.gov.sg/buying-a-property-how-much-can-you-afford/) supplies the bank term, cash, and debt screening rules. Verify CPF eligibility with the [CPF housing usage calculator](https://www.cpf.gov.sg/member/tools-and-services/calculators/cpf-housing-usage). HDB's [Request for Value](https://www.hdb.gov.sg/buying-a-flat/resale-flats/process-for-buying-a-resale-flat/option-to-purchase/request-for-value) provides the value needed for an actual resale application. Loan interest is entered by the user; check the current [HDB rate](https://www.hdb.gov.sg/sitecore/content/hdbinfoweb/home/managing-my-home/finances/loan-matters/interest-rate) or your bank offer. The exact checked dates, assumptions, and exclusions are in [`data/reference/11_policy_notes.md`](data/reference/11_policy_notes.md).
+The buyer calculation uses the residential [IRAS Buyer's Stamp Duty schedule](https://www.iras.gov.sg/taxes/stamp-duty/for-property/buying-or-acquiring-property/buyer%27s-stamp-duty-%28bsd%29) effective 15 February 2023 and takes the [ABSD rate](https://www.iras.gov.sg/taxes/stamp-duty/for-property/buying-or-acquiring-property/additional-buyer%27s-stamp-duty-%28absd%29) from the user. It applies the lower of price and HDB value when estimating loan and CPF funding, following [HDB resale financing](https://www.hdb.gov.sg/sitecore/content/hdbinfoweb/home/buying-a-flat/resale-flats/process-for-buying-a-resale-flat/resale-flat-planning/mode-of-financing) and [CPF down-payment guidance](https://www.cpf.gov.sg/service/article/can-i-use-my-cpf-savings-for-the-down-payment-of-my-property). [MoneySense's affordability guide](https://www.moneysense.gov.sg/buying-a-property-how-much-can-you-afford/) supplies the bank term, cash, and debt screening rules. Verify CPF eligibility with the [CPF housing usage calculator](https://www.cpf.gov.sg/member/tools-and-services/calculators/cpf-housing-usage). HDB's [Request for Value](https://www.hdb.gov.sg/buying-a-flat/resale-flats/process-for-buying-a-resale-flat/option-to-purchase/request-for-value) provides the value needed for an actual resale application. Loan interest is entered by the user; check the current [HDB rate](https://www.hdb.gov.sg/sitecore/content/hdbinfoweb/home/managing-my-home/finances/loan-matters/interest-rate) or your bank offer. The exact checked dates, assumptions, and exclusions are in [`data/reference/11_policy_notes.md`](data/reference/11_policy_notes.md).
 
 ## Sources and usage
 
-The extraction scripts use open government datasets and OneMap location services. Check each source's terms and attribution requirements before redistributing raw or derived data. Key sources are listed in [`implementation_plan.md`](implementation_plan.md) and [`docs/onemap_location_extraction.md`](docs/onemap_location_extraction.md).
+The extraction scripts use open government datasets and OneMap location services. Check each source's terms and attribution requirements before redistributing raw or derived data. Source details and extraction notes are recorded in [`docs/onemap_location_extraction.md`](docs/onemap_location_extraction.md) and the dated files under `data/reference/`.
 
 ## Limitations
 
-- The current model workflow is a single-town Sengkang pilot, not a Singapore-wide valuation service.
+- Nationwide support does not establish equal accuracy in every town; town-level validation is required before relying on the national candidate.
 - The available data does not describe a unit's interior condition, renovation quality, exact floor, orientation, view, or seller motivation.
 - Amenity locations are current snapshots; historic opening/closing dates are not available for every facility.
 - CHAS clinics are not a complete registry of all healthcare providers. OneMap search results and themes can have incomplete coverage or false positives.

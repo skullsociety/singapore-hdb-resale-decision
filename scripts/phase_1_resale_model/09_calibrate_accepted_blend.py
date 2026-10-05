@@ -1,4 +1,4 @@
-"""Calibrate and backtest the user-accepted Ridge/comparable pilot estimate."""
+"""Calibrate and backtest the Ridge/comparable estimate on the current national data."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import duckdb
 import numpy as np
 
 
-MODEL_ID = "PILOT_RIDGE_COMPARABLE_BLEND_V1"
+MODEL_ID = "NATIONAL_RIDGE_COMPARABLE_BLEND_V1"
 COMPARABLE_ID = "BASELINE_COMPARABLE_SALES_V1"
 RIDGE_ID = "ML_RIDGE_RESALE_PRICE_V1"
 
@@ -191,7 +191,7 @@ def run(root: Path) -> dict:
     last_source_month = max(row["transaction_month"] for row in rows)
     source_run = json.loads((root / "reports/phase_1_resale_model/03_duckdb_build_summary.json").read_text(encoding="utf-8"))
     release = {
-        "status": "accepted_sengkang_pilot", "model_id": MODEL_ID,
+        "status": "national_candidate", "model_id": MODEL_ID,
         "built_at_utc": datetime.now(timezone.utc).isoformat(),
         "ridge_weight": ridge_weight, "comparable_weight": round(1 - ridge_weight, 2),
         "ridge_artifact": "models/phase_1_resale_model/06_ridge_resale_price.joblib",
@@ -212,7 +212,7 @@ def run(root: Path) -> dict:
         "test_mean_interval_width_sgd": round(statistics.mean(row["interval_width"] for row in range_rows), 2),
         "test_mae_sgd": blend_test_metric["mae"],
         "test_rows": len(test),
-        "limitation": "Sengkang pilot. Test period and prior model results were inspected during development. Ranges do not reflect unobserved renovation, view, exact floor, or transaction-specific negotiation.",
+        "limitation": "National candidate requiring review of town-level validation metrics. Test period and prior model results were inspected during development. Ranges do not reflect unobserved renovation, view, exact floor, or transaction-specific negotiation.",
         "outputs": {
             "ranges": "reports/phase_1_resale_model/09_blend_price_ranges.csv",
             "metrics": "reports/phase_1_resale_model/09_blend_backtest_metrics.csv",

@@ -45,6 +45,12 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual("Report reference (optional)", app.text_input[0].label)
         self.assertEqual("Comparison notes (optional)", app.text_area[0].label)
 
+    def test_buy_and_sell_planning_page_opens(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Buy and sell planning").run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("Buy and sell planning", app.header[0].value)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-"""Price one Sengkang HDB flat with the accepted Ridge/comparable pilot."""
+"""Price one Singapore HDB flat with the current Ridge/comparable release."""
 
 from __future__ import annotations
 
@@ -48,7 +48,9 @@ def block_record(connection, block: str, street: str) -> dict:
                p.bldg_contract_town, p.year_completed, p.max_floor_lvl,
                p.total_dwelling_units, p.commercial, p.market_hawker,
                p.multistorey_carpark, p.precinct_pavilion,
-               l.* EXCLUDE (block_id)
+               l.* EXCLUDE (block_id),
+               (SELECT mode(t.town) FROM resale_transactions t
+                WHERE t.block_id = b.block_id) AS town
         FROM hdb_blocks b
         JOIN hdb_properties p USING (block_id)
         JOIN block_location_features l USING (block_id)
@@ -58,8 +60,8 @@ def block_record(connection, block: str, street: str) -> dict:
                if normalise(str(values[1])) == normalise(block) and normalise(str(values[2])) == normalise(street)]
     if len(matches) != 1:
         raise ValueError(f"Expected one known HDB block for {block} {street}; found {len(matches)}")
-    if matches[0]["bldg_contract_town"] != "SK":
-        raise ValueError("The accepted pilot model currently supports Sengkang blocks only")
+    if not matches[0]["town"]:
+        raise ValueError("This block has no registered resale history from which to determine its town")
     return matches[0]
 
 
@@ -164,8 +166,8 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     baseline = module(scripts / "04_build_baselines.py", "baseline_model_10")
     builder = module(scripts / "03_build_duckdb.py", "database_builder_10")
     release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
-    if release["status"] != "accepted_sengkang_pilot":
-        raise ValueError("Accepted pilot configuration is missing; run step 09")
+    if release["status"] != "national_candidate":
+        raise ValueError("Current national model configuration is missing; run step 09")
     month = parse_month(args.valuation_month)
     flat_type = normalise(args.flat_type)
     storey_range = normalise(args.storey_range)
@@ -205,7 +207,7 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         )
         source = {
             "transaction_id": "USER_REQUEST", "block_id": block["block_id"],
-            "transaction_month": month, "dataset_split": "request", "town": "SENGKANG",
+            "transaction_month": month, "dataset_split": "request", "town": block["town"],
             "flat_type": flat_type, "flat_model": flat_model,
             "floor_area_sqm": float(args.floor_area_sqm), "storey_range": storey_range,
             "storey_midpoint": midpoint, "lease_commence_year": lease_year,
@@ -222,10 +224,10 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         ridge_price, explanation = ridge_contributions(artifact["pipeline"], np.asarray(vectors, dtype=object), names)
         all_sales = baseline.load_records(connection)
         prior_sales = [row for row in all_sales if row["transaction_month"] < month
-                       and row["town"] == "SENGKANG" and row["flat_type"] == flat_type]
+                       and row["town"] == block["town"] and row["flat_type"] == flat_type]
         block_names = {row[0]: (row[1], row[2]) for row in connection.execute("SELECT block_id, block, street FROM hdb_blocks").fetchall()}
     candidates, tier = baseline.select_comparables(source, prior_sales)
-    warnings = ["Sengkang pilot estimate; not an official HDB or professional valuation.",
+    warnings = ["National candidate estimate; review town-level validation before relying on it.",
                 "Unit condition, renovation, exact floor, view, and seller circumstances are unavailable."]
     if inferred_model:
         warnings.append("Flat model was inferred from earlier same-block sales; verify it for this unit.")
@@ -280,7 +282,7 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     if release["range_status"] != "pilot_tolerance_pass":
         result["warnings"].append("Historical range coverage missed its stated level; treat the bounds as exploratory.")
     else:
-        result["warnings"].append("The range is broad and its measured coverage applies only to the Sengkang pilot backtest.")
+        result["warnings"].append("The range is broad; its measured coverage is an overall national backtest and may differ by town.")
     return result
 
 

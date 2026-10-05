@@ -98,9 +98,9 @@ def validate_payload(payload: dict) -> tuple[str, dict, list[tuple[dict, dict]]]
     count, cards = payload.get("advertised_count"), payload.get("cards")
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
         raise ValueError("Invalid run ID")
-    if type(number) is not int or type(total) is not int or not (1 <= number <= total <= 100):
+    if type(number) is not int or type(total) is not int or not (1 <= number <= total <= 1000):
         raise ValueError("Invalid page number or total")
-    if type(count) is not int or not (1 <= count <= 5000):
+    if type(count) is not int or not (1 <= count <= 50000):
         raise ValueError("Invalid advertised count")
     source_site = payload.get("source_site")
     source = SOURCES.get(source_site)
@@ -108,8 +108,8 @@ def validate_payload(payload: dict) -> tuple[str, dict, list[tuple[dict, dict]]]
         raise ValueError("Unsupported listing source")
     if not source["matches_page"](payload.get("source_url", ""), number):
         raise ValueError("Unexpected results page URL")
-    if not isinstance(cards, list) or not (1 <= len(cards) <= 30):
-        raise ValueError("Expected 1 to 30 result cards")
+    if not isinstance(cards, list) or not (1 <= len(cards) <= 50):
+        raise ValueError("Expected 1 to 50 result cards")
     observed = propertyguru.utc_now()
     accepted = []
     for card in cards:

@@ -122,7 +122,7 @@ def field_roles(name: str, distinct: int, count: int) -> tuple[str, str]:
     if name in METADATA_COLUMNS:
         return "evaluation metadata", "Train/validation/test label; exclude from model inputs."
     if name == "town":
-        return "categorical", "Only Sengkang is present, so this column cannot distinguish prices in the current dataset."
+        return "categorical", "Town is categorical; compare town groups rather than assigning an artificial numeric order."
     if name == "transaction_month":
         return "date/time", "Calendar trend feature; association does not prove a causal time effect."
     if name in {"transaction_year", "transaction_month_number", "transaction_quarter"}:

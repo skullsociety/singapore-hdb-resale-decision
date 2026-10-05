@@ -24,6 +24,7 @@ __pycache__/
 
 # Credentials and local configuration
 /.local/
+/implementation_plan.md
 .env
 .env.*
 !.env.example
@@ -32,6 +33,7 @@ __pycache__/
 /.streamlit/secrets.toml
 
 # Local tool caches and test coverage
+/dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
