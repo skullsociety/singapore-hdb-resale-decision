@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HDB Seller Proceeds Planner</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/seller.css">
+  <script src="/seller.js" defer></script>
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <div class="brand"><span class="brand-mark">H</span><span>Home decision lab <small>Sengkang pilot</small></span></div>
+      <div class="masthead-actions"><a href="/">← Buyer planner</a><span class="privacy"><span class="dot"></span> Runs on this computer</span></div>
+    </header>
+    <main>
+      <section class="intro">
+        <p class="eyebrow">Seller planning · Phase 3</p>
+        <h1>See what a sale may leave you.</h1>
+        <p class="lead">Estimate the cash proceeds and CPF refund from selling an HDB flat. Compare sale prices and, if useful, the funds needed for your next home.</p>
+        <div class="intro-notes"><span>✓ Local planning estimate</span><span>✓ Cash and CPF shown separately</span><span>✓ Nothing saved automatically</span></div>
+      </section>
+      <div class="layout">
+        <form id="seller-form" novalidate>
+          <section class="panel">
+            <div class="panel-head"><span class="step">01</span><div><h2>Sale prices</h2><p>Start with a realistic expected sale price.</p></div></div>
+            <div class="fields two">
+              <label>Expected sale price <em>required</em><span class="input-wrap"><span>S$</span><input name="expected_sale_price_sgd" type="number" min="1" step="0.01" inputmode="decimal" required placeholder="e.g. 600000"></span></label>
+              <label>Conservative sale price<span class="input-wrap"><span>S$</span><input name="conservative_sale_price_sgd" type="number" min="1" step="0.01" inputmode="decimal" placeholder="Otherwise 5% lower"></span></label>
+              <label>Optimistic sale price<span class="input-wrap"><span>S$</span><input name="optimistic_sale_price_sgd" type="number" min="1" step="0.01" inputmode="decimal" placeholder="Otherwise 5% higher"></span></label>
+            </div>
+            <p class="seller-note">The 5% prices are illustrative assumptions, not predictions from the flat valuation model. Replace them if you have better evidence.</p>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><span class="step">02</span><div><h2>Loan and CPF to settle</h2><p>Use current statements for all owners of the flat.</p></div></div>
+            <div class="fields two">
+              <label>Outstanding housing loan <em>required</em><span class="input-wrap"><span>S$</span><input name="outstanding_loan_sgd" type="number" min="0" step="0.01" inputmode="decimal" required placeholder="From HDB or bank"></span><small>Use the amount expected at sale completion, including any redemption charges that apply.</small></label>
+              <label>CPF refund required for all owners<span class="input-wrap"><span>S$</span><input name="cpf_refund_required_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="From CPF dashboard"></span><small>Prefer the total from CPF's <a href="https://www.cpf.gov.sg/member/home-ownership/using-your-cpf-to-buy-a-home/cpf-refund-when-selling-or-transferring-property" target="_blank" rel="noopener noreferrer">Home ownership dashboard ↗</a>. Include each owner's required refund.</small></label>
+            </div>
+            <details><summary>No CPF refund total? Enter its parts <span>alternative</span></summary>
+              <div class="fields two inset">
+                <label>CPF principal used<span class="input-wrap"><span>S$</span><input name="cpf_principal_used_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="All owners"></span></label>
+                <label>CPF accrued interest<span class="input-wrap"><span>S$</span><input name="cpf_accrued_interest_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="All owners"></span></label>
+                <label>Other required CPF refund<span class="input-wrap"><span>S$</span><input name="cpf_other_refund_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="If applicable"></span><small>For example, an amount pledged against a retirement sum. Confirm with CPF.</small></label>
+              </div>
+            </details>
+            <p class="seller-note">Enter either the official CPF refund total or the principal and accrued interest parts. CPF refunded from a sale goes to CPF accounts; it is not automatically cash in hand.</p>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><span class="step">03</span><div><h2>Selling costs</h2><p>Enter amounts in dollars, inclusive of tax where applicable.</p></div></div>
+            <div class="fields two">
+              <label>Agent fee<span class="input-wrap"><span>S$</span><input name="agent_fee_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="From your agreement"></span></label>
+              <label>Legal fee<span class="input-wrap"><span>S$</span><input name="legal_fee_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Your estimate"></span></label>
+              <label>Resale levy<span class="input-wrap"><span>S$</span><input name="resale_levy_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Only if applicable"></span><small>Check whether a levy is payable for your next housing choice.</small></label>
+              <label>Outstanding upgrading costs<span class="input-wrap"><span>S$</span><input name="upgrading_cost_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="If applicable"></span></label>
+              <label>Other sale deductions<span class="input-wrap"><span>S$</span><input name="other_selling_costs_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Other confirmed amounts"></span></label>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><span class="step">04</span><div><h2>Your next home</h2><p>Optional comparison with the buyer planner.</p></div></div>
+            <div class="import-box">
+              <div><strong>Have a buyer plan JSON?</strong><p>Load its asking-price scenario to fill the cash and CPF needs below. The file is read in your browser.</p></div>
+              <label class="file-label">Choose buyer plan<input id="buyer-plan-file" type="file" accept=".json,application/json"></label>
+            </div>
+            <p id="import-status" class="inline-note" role="status"></p>
+            <div class="fields two next-home-fields">
+              <label>Next-home initial cash needed<span class="input-wrap"><span>S$</span><input name="next_home_cash_needed_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional"></span></label>
+              <label>Next-home CPF used for price<span class="input-wrap"><span>S$</span><input name="next_home_cpf_needed_sgd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional"></span></label>
+            </div>
+            <p class="seller-note">Enter both amounts or leave both blank. The comparison shows how much of each could come from the sale; it does not check CPF reuse, timing, other savings or a second HDB loan.</p>
+          </section>
+          <div class="action-bar"><div><strong>Ready to estimate proceeds?</strong><p>The calculation runs locally and does not save your entries.</p></div><button class="primary" type="submit" id="calculate-button">Calculate sale proceeds <span>→</span></button></div>
+        </form>
+        <aside class="side">
+          <div class="guide-card"><p class="eyebrow">Before you start</p><h2>Three figures to check</h2><ol><li><strong>Loan balance</strong><span>Check HDB or your lender for the amount at completion.</span></li><li><strong>CPF refund</strong><span>Check each owner's CPF Home ownership dashboard.</span></li><li><strong>Sale price</strong><span>Compare several plausible prices; the middle figure is your assumption.</span></li></ol><a href="/seller-notes" target="_blank" rel="noopener noreferrer">Read the source and rule notes ↗</a></div>
+          <div class="quiet-card">If you sell below market value or proceeds are insufficient, obtain HDB and CPF advice before relying on this estimate.</div>
+        </aside>
+      </div>
+      <section id="seller-result" class="result hidden" aria-live="polite">
+        <div class="result-head"><div><p class="eyebrow">Your sale estimate</p><h2>What the expected price may leave</h2><p id="result-subtitle"></p></div><button id="download-button" type="button" class="secondary">Download result JSON</button></div>
+        <div id="result-cards" class="cards"></div>
+        <div class="result-grid"><div class="result-panel"><h3>Expected sale breakdown</h3><dl id="breakdown"></dl></div><div class="result-panel"><h3>Three sale prices</h3><div class="table-scroll"><table><thead><tr><th>Scenario</th><th>Cash proceeds</th><th>CPF refund</th><th>Top-up risks</th></tr></thead><tbody id="scenario-body"></tbody></table></div></div></div>
+        <div class="result-grid"><div id="next-home-result" class="result-panel hidden"><h3>Against next-home needs</h3><div class="table-scroll"><table><thead><tr><th>Scenario</th><th>Cash sale less cash need</th><th>CPF refund less CPF need</th></tr></thead><tbody id="next-home-body"></tbody></table></div></div><div class="result-panel"><h3>Read before relying on this</h3><ul id="warnings"></ul><p class="source-note">Methods and official references: <a href="/seller-notes" target="_blank" rel="noopener noreferrer">seller policy notes ↗</a></p></div></div>
+      </section>
+      <div id="form-error" class="error hidden" role="alert"></div>
+    </main>
+    <footer>Local research tool · HDB seller planning · No automatic sale approval</footer>
+  </div>
+</body>
+</html>
+

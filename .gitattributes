@@ -1,0 +1,20 @@
+# Keep source files consistent when contributors use Windows, macOS, or Linux.
+* text=auto
+
+*.ps1 text eol=crlf
+*.py text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+
+# Never attempt text conversion for generated binary data.
+*.db binary
+*.duckdb binary
+*.joblib binary
+*.cbm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary

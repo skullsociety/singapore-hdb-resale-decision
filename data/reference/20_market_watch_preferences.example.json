@@ -1,0 +1,12 @@
+{
+  "profile_id": "my_sengkang_search",
+  "profile_name": "My Sengkang search",
+  "source_site": "propertyguru",
+  "town": "SENGKANG",
+  "maximum_price_sgd": null,
+  "minimum_floor_area_sqm": null,
+  "flat_types": [],
+  "minimum_comparable_count": 3,
+  "maximum_listing_age_days": 14,
+  "require_estimate": true
+}

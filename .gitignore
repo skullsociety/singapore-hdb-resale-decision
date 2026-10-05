@@ -1,0 +1,44 @@
+# Local Python environment and generated artifacts
+.venv/
+__pycache__/
+*.py[cod]
+
+# Downloaded, cached, processed, and model-ready data
+/data/raw/
+/data/interim/
+/data/processed/
+/data/model_ready/
+/data/property.duckdb
+/data/property.duckdb.*
+/data/listings.db*
+/data/backups/
+/data/propertyguru-browser/
+
+# Generated analysis, collection, valuation, and personal-planning outputs.
+# The source scripts recreate these locally from approved data sources.
+/reports/
+
+# Locally fitted model binaries
+/models/**/*.joblib
+/models/**/*.cbm
+
+# Credentials and local configuration
+/.local/
+.env
+.env.*
+!.env.example
+*.secret
+*.token
+/.streamlit/secrets.toml
+
+# Local tool caches and test coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs and editor/OS files
+*.log
+.DS_Store
+Thumbs.db

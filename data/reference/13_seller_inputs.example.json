@@ -1,0 +1,14 @@
+{
+  "expected_sale_price_sgd": 600000,
+  "conservative_sale_price_sgd": 570000,
+  "optimistic_sale_price_sgd": 630000,
+  "outstanding_loan_sgd": 200000,
+  "cpf_refund_required_sgd": 150000,
+  "agent_fee_sgd": 12000,
+  "legal_fee_sgd": 2000,
+  "resale_levy_sgd": 0,
+  "upgrading_cost_sgd": 0,
+  "other_selling_costs_sgd": 0,
+  "next_home_cash_needed_sgd": 250000,
+  "next_home_cpf_needed_sgd": 120000
+}
