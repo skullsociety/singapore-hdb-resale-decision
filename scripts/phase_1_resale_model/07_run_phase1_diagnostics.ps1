@@ -10,5 +10,6 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     throw 'Project Python environment is missing. Run .\scripts\phase_1_resale_model\03_run_duckdb_build.ps1 first.'
 }
 
+Write-Output "Running diagnostics script: $diagnostics"
 & $venvPython $diagnostics --project-root $projectRoot
 exit $LASTEXITCODE

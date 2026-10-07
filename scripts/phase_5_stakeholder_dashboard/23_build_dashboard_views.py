@@ -17,6 +17,12 @@ REQUIRED_TABLES = {
 
 
 def model_metrics(property_database: Path) -> list[tuple]:
+    project_root = property_database.resolve().parent.parent
+    release_path = project_root / "reports/phase_1_resale_model/09_blend_release.json"
+    release = json.loads(release_path.read_text(encoding="utf-8"))
+    if release.get("status") != "national_candidate":
+        raise ValueError("No approved model release is available; review the Step 09 release report")
+    released_model_id = release["model_id"]
     with duckdb.connect(str(property_database), read_only=True) as connection:
         return connection.execute("""
             SELECT m.model_id, COALESCE(r.model_name, m.model_id) AS model_name,
@@ -26,14 +32,14 @@ def model_metrics(property_database: Path) -> list[tuple]:
                    m.rmse, m.r_squared, m.mean_bias, m.interval_coverage_pct,
                    m.mean_interval_width
             FROM (
-                SELECT * FROM model_evaluation_metrics
+                SELECT * FROM model_evaluation_metrics WHERE model_id <> ?
                 UNION ALL
                 SELECT p.* FROM pilot_blend_backtest_metrics p
-                WHERE p.model_id = 'PILOT_RIDGE_COMPARABLE_BLEND_V1'
+                WHERE p.model_id = ?
             ) m
             LEFT JOIN model_registry r USING (model_id)
             ORDER BY m.model_id, m.dataset_split
-        """).fetchall()
+        """, [released_model_id, released_model_id]).fetchall()
 
 
 def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], built_at: str) -> None:

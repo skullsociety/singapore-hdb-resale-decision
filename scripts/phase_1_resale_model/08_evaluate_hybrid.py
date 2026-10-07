@@ -113,28 +113,35 @@ def fit_ridge(models, matrix: np.ndarray, rows: list[dict], train_indices: list[
     }
 
 
-def training_comparables(rows: list[dict], target_ids: set[str], baselines) -> dict[str, float]:
+def training_comparables(rows: list[dict], target_ids: set[str], baselines) -> tuple[dict[str, float], set[str]]:
     by_month: dict[date, list[dict]] = defaultdict(list)
     for row in rows:
         if row["dataset_split"] == "train":
             by_month[row["transaction_month"]].append(row)
-    history: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    history = baselines.ComparableHistory()
     result = {}
+    without_history = set()
+    processed = 0
+    progress_interval = max(1, len(target_ids) // 10)
     for month in sorted(by_month):
-        for row in by_month[month]:
+        month_rows = by_month[month]
+        for row in month_rows:
             transaction_id = row["transaction_id"]
             if transaction_id not in target_ids:
                 continue
-            group = (str(row["town"]), str(row["flat_type"]))
-            selected, _ = baselines.select_comparables(row, history[group])
+            processed += 1
+            selected, _ = baselines.select_comparables(row, history)
             if not selected:
-                raise ValueError(f"No earlier comparable sales for {transaction_id}")
-            result[transaction_id] = round(baselines.median_prediction(selected)[0], 2)
-        for row in by_month[month]:
-            history[(str(row["town"]), str(row["flat_type"]))].append(row)
-    if set(result) != target_ids:
+                without_history.add(transaction_id)
+            else:
+                result[transaction_id] = round(baselines.median_prediction(selected)[0], 2)
+            if processed % progress_interval == 0 or processed == len(target_ids):
+                print(f"Rolling comparables: {processed:,}/{len(target_ids):,} fold sales checked.", flush=True)
+        # Current-month transactions cannot become comparables until the next month.
+        history.add(month_rows)
+    if (set(result) | without_history) != target_ids:
         raise ValueError("Rolling comparable predictions do not cover every training-fold target")
-    return result
+    return result, without_history
 
 
 def read_prediction_file(path: Path, model_id: str) -> dict[str, float]:
@@ -196,8 +203,18 @@ def run(project_root: Path) -> dict:
                       "transaction_ids": sorted(base_predictions)})
         print(f"Completed {label}: {len(fit_indices):,} earlier sales, {len(eval_indices):,} predictions.", flush=True)
 
-    oof_comparable = training_comparables(rows, set(oof_ridge), baselines)
-    tune_ids = [*folds[0]["transaction_ids"], *folds[1]["transaction_ids"]]
+    oof_comparable, without_history = training_comparables(rows, set(oof_ridge), baselines)
+    for fold in folds:
+        fold["comparable_prediction_rows"] = sum(key in oof_comparable for key in fold["transaction_ids"])
+        fold["excluded_no_prior_comparables"] = len(fold["transaction_ids"]) - fold["comparable_prediction_rows"]
+        print(
+            f"{fold['label']} comparable coverage: {fold['comparable_prediction_rows']:,}/"
+            f"{fold['prediction_rows']:,}; {fold['excluded_no_prior_comparables']:,} excluded.",
+            flush=True,
+        )
+    tune_ids = [key for fold in folds[:2] for key in fold["transaction_ids"] if key in oof_comparable]
+    if not tune_ids or not any(key in oof_comparable for key in folds[2]["transaction_ids"]):
+        raise ValueError("Too few training-fold sales with earlier comparables for a paired hybrid evaluation")
     ridge_weight, ridge_tune_mae = choose_weight(tune_ids, oof_ridge, oof_comparable, actual)
     trend_weight, trend_tune_mae = choose_weight(tune_ids, oof_trend, oof_comparable, actual)
 
@@ -215,7 +232,7 @@ def run(project_root: Path) -> dict:
     comparable = {**oof_comparable, **existing_comparable}
     ids_by_period = {
         "weight_tuning": tune_ids,
-        "rolling_check": folds[2]["transaction_ids"],
+        "rolling_check": [key for key in folds[2]["transaction_ids"] if key in oof_comparable],
         "validation": [row["transaction_id"] for row in rows if row["dataset_split"] == "validation"],
         "test": [row["transaction_id"] for row in rows if row["dataset_split"] == "test"],
     }
@@ -226,7 +243,7 @@ def run(project_root: Path) -> dict:
         weight = ridge_weight if key == "ridge_comparable_blend" else trend_weight
         source = ridge if key == "ridge_comparable_blend" else trend
         return {transaction_id: round(weight * source[transaction_id] + (1 - weight) * comparable[transaction_id], 2)
-                for transaction_id in source}
+                for transaction_id in source if transaction_id in comparable}
 
     values = {candidate: candidate_values(candidate) for candidate in CANDIDATES}
     metrics = []
@@ -260,9 +277,11 @@ def run(project_root: Path) -> dict:
         for key in paired_ids
     ])
     random = np.random.default_rng(42)
-    bootstrap_means = random.choice(
-        paired_error_difference, size=(5000, len(paired_error_difference)), replace=True,
-    ).mean(axis=1)
+    # Batch draws to avoid holding the full bootstrap matrix in memory.
+    bootstrap_means = np.concatenate([
+        random.choice(paired_error_difference, size=(100, len(paired_error_difference)), replace=True).mean(axis=1)
+        for _ in range(50)
+    ])
     blend_vs_comparable = {
         "test_mae_difference": round(blend_test["mae"] - comparable_test["mae"], 2),
         "paired_bootstrap_95pct_interval": [round(float(x), 2) for x in np.quantile(bootstrap_means, (.025, .975))],
@@ -301,7 +320,8 @@ def run(project_root: Path) -> dict:
         "ridge_weight": ridge_weight, "trend_ridge_weight": trend_weight,
         "weight_tuning_mae": {"ridge_blend": round(ridge_tune_mae, 2), "trend_blend": round(trend_tune_mae, 2)},
         "folds": [{key: value for key, value in fold.items() if key != "transaction_ids"} for fold in folds],
-        "selection_rule": "Weights from first two rolling training folds; candidate with lowest validation MAE; test report-only.",
+        "selection_rule": "Weights from sales with earlier comparables in the first two rolling training folds; candidate with lowest validation MAE; test report-only.",
+        "excluded_training_fold_sales_without_prior_comparables": len(without_history),
         "selected_candidate": selected, "selected_candidate_test_metrics": selected_test,
         "comparable_sales_test_metrics": comparable_test,
         "ridge_comparable_blend_test_metrics": blend_test,

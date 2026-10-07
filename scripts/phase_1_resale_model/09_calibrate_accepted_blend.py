@@ -1,4 +1,4 @@
-"""Calibrate and backtest the Ridge/comparable estimate on the current national data."""
+"""Calibrate and backtest the validation-selected resale-price model."""
 
 from __future__ import annotations
 
@@ -16,9 +16,36 @@ import duckdb
 import numpy as np
 
 
-MODEL_ID = "NATIONAL_RIDGE_COMPARABLE_BLEND_V1"
 COMPARABLE_ID = "BASELINE_COMPARABLE_SALES_V1"
-RIDGE_ID = "ML_RIDGE_RESALE_PRICE_V1"
+
+
+def comparable_release_gate(
+    selected_id: str, selected_predictions: dict, comparable_predictions: dict,
+) -> dict:
+    """A trained model must beat the same-sale comparable baseline in both later splits."""
+    splits = {}
+    for split in ("validation", "test"):
+        keys = [key for key in selected_predictions if key[0] == split]
+        if not keys or any(key not in comparable_predictions for key in keys):
+            raise ValueError(f"Comparable predictions are missing for the {split} release check")
+        model_mae = statistics.mean(
+            abs(float(selected_predictions[key]["predicted_price"]) - float(selected_predictions[key]["actual_price"]))
+            for key in keys
+        )
+        baseline_mae = statistics.mean(
+            abs(float(comparable_predictions[key]["predicted_price"]) - float(selected_predictions[key]["actual_price"]))
+            for key in keys
+        )
+        splits[split] = {
+            "sales": len(keys), "model_mae_sgd": round(model_mae, 2),
+            "comparable_mae_sgd": round(baseline_mae, 2),
+            "model_beats_comparable": model_mae < baseline_mae,
+        }
+    return {
+        "model_id": selected_id, "baseline_id": COMPARABLE_ID,
+        "passed": all(item["model_beats_comparable"] for item in splits.values()),
+        "splits": splits,
+    }
 
 
 def module(path: Path, name: str):
@@ -65,26 +92,31 @@ def run(root: Path) -> dict:
     scripts = root / "scripts/phase_1_resale_model"
     models = module(scripts / "06_train_resale_models.py", "resale_models_09")
     diagnostics = module(scripts / "07_phase1_diagnostics.py", "diagnostics_09")
-    selection = json.loads((root / "reports/phase_1_resale_model/08_hybrid_selection.json").read_text(encoding="utf-8"))
-    ridge_weight = float(selection["ridge_weight"])
-    if not 0 <= ridge_weight <= 1:
-        raise ValueError("Invalid saved blend weight")
+    selection = json.loads((root / "reports/phase_1_resale_model/06_model_selection.json").read_text(encoding="utf-8"))
+    selected_model = selection.get("selected_model")
+    if not isinstance(selected_model, dict):
+        raise ValueError("Step 06 selection report is incomplete; rerun model training")
+    selected_id = selected_model["model_id"]
+    if selected_id not in models.MODEL_SPECS:
+        raise ValueError("Step 06 selected model is not a fitted machine-learning model; rerun step 06")
+    if selected_id not in selection.get("artifacts", {}) or not selection.get("feature_columns"):
+        raise ValueError("Step 06 selection report is missing the model artifact or feature schema; rerun model training")
     rows = models.read_transactions(root / "data/property.duckdb")
     by_id = {row["transaction_id"]: row for row in rows}
     train = [row for row in rows if row["dataset_split"] == "train"]
     validation = [row for row in rows if row["dataset_split"] == "validation"]
     test = [row for row in rows if row["dataset_split"] == "test"]
-    saved = csv_rows(root / "data/model_ready/08_hybrid_predictions.csv")
-    blend = {
-        (row["period"], row["transaction_id"]): row
-        for row in saved if row["candidate"] == "ridge_comparable_blend" and row["period"] in {"validation", "test"}
+    saved = csv_rows(root / "data/model_ready/06_ml_predictions.csv")
+    selected_predictions = {
+        (row["dataset_split"], row["transaction_id"]): row
+        for row in saved if row["model_id"] == selected_id and row["dataset_split"] in {"validation", "test"}
     }
     expected = {(split, row["transaction_id"]) for split, records in (("validation", validation), ("test", test)) for row in records}
-    if set(blend) != expected:
-        raise ValueError("Blend predictions do not match the current validation/test transaction table")
-    for (split, transaction_id), prediction in blend.items():
+    if set(selected_predictions) != expected:
+        raise ValueError("Selected-model predictions do not match validation/test transactions; rerun step 06")
+    for (split, transaction_id), prediction in selected_predictions.items():
         if abs(float(prediction["actual_price"]) - float(by_id[transaction_id]["resale_price"])) > .01:
-            raise ValueError(f"Source data changed since step 08 for {transaction_id}; rerun steps 04–09")
+            raise ValueError(f"Source data changed since model training for {transaction_id}; rerun steps 04–06")
     baseline_rows = csv_rows(root / "data/model_ready/baseline_predictions.csv")
     comparable = {
         (row["dataset_split"], row["transaction_id"]): row
@@ -92,13 +124,29 @@ def run(root: Path) -> dict:
     }
     if set(comparable) != expected:
         raise ValueError("Comparable predictions do not match validation/test transactions")
+    for (_, transaction_id), prediction in comparable.items():
+        if abs(float(prediction["actual_price"]) - float(by_id[transaction_id]["resale_price"])) > .01:
+            raise ValueError(f"Comparable predictions are stale for {transaction_id}; rerun step 04")
+    gate = comparable_release_gate(selected_id, selected_predictions, comparable)
+    if not gate["passed"]:
+        reports = root / "reports/phase_1_resale_model"
+        reports.mkdir(parents=True, exist_ok=True)
+        held = {
+            "status": "held_baseline_outperforms_model",
+            "model_id": selected_id,
+            "built_at_utc": datetime.now(timezone.utc).isoformat(),
+            "reason": "The selected machine-learning model must have lower MAE than comparable sales on both validation and test sales.",
+            "baseline_gate": gate,
+        }
+        (reports / "09_blend_release.json").write_text(json.dumps(held, indent=2) + "\n", encoding="utf-8")
+        return held
 
     validation_months = sorted({row["transaction_month"] for row in validation})
     early_months = set(validation_months[:len(validation_months) // 2])
     early = [row for row in validation if row["transaction_month"] in early_months]
     late = [row for row in validation if row["transaction_month"] not in early_months]
     early_residuals = [
-        float(row["resale_price"]) - float(blend["validation", row["transaction_id"]]["predicted_price"])
+        float(row["resale_price"]) - float(selected_predictions["validation", row["transaction_id"]]["predicted_price"])
         for row in early
     ]
     calibration_check = []
@@ -107,7 +155,7 @@ def run(root: Path) -> dict:
             covered = []
             widths = []
             for row in late:
-                point = float(blend["validation", row["transaction_id"]]["predicted_price"])
+                point = float(selected_predictions["validation", row["transaction_id"]]["predicted_price"])
                 low, high = interval(point, early_residuals, level, method, diagnostics)
                 covered.append(low <= float(row["resale_price"]) <= high)
                 widths.append(high - low)
@@ -129,7 +177,7 @@ def run(root: Path) -> dict:
     ))
 
     residuals = [
-        float(row["resale_price"]) - float(blend["validation", row["transaction_id"]]["predicted_price"])
+        float(row["resale_price"]) - float(selected_predictions["validation", row["transaction_id"]]["predicted_price"])
         for row in validation
     ]
     if len(residuals) < 100:
@@ -138,13 +186,13 @@ def run(root: Path) -> dict:
     range_rows = []
     for row in test:
         transaction_id = row["transaction_id"]
-        point = float(blend["test", transaction_id]["predicted_price"])
+        point = float(selected_predictions["test", transaction_id]["predicted_price"])
         count = int(comparable["test", transaction_id]["comparable_count"])
         level = .975 if count < 5 else .95
         low, high = interval(point, residuals, level, selected_method, diagnostics)
         confidence = "insufficient_comparable_evidence" if count < 3 else "low_wide_range" if count < 5 else "moderate" if count < 20 else "supported_by_comparables"
         result = {
-            "transaction_id": transaction_id, "model_id": MODEL_ID, "dataset_split": "test",
+            "transaction_id": transaction_id, "model_id": selected_id, "dataset_split": "test",
             "valuation_month": row["transaction_month"].isoformat(), "town": row["town"],
             "flat_type": row["flat_type"], "point_estimate": round(point, 2),
             "lower_estimate": low, "upper_estimate": high, "interval_width": round(high - low, 2),
@@ -163,15 +211,23 @@ def run(root: Path) -> dict:
             transaction_id = row["transaction_id"]
             actual = float(row["resale_price"])
             for model_id, predicted in (
-                (MODEL_ID, float(blend[split, transaction_id]["predicted_price"])),
+                (selected_id, float(selected_predictions[split, transaction_id]["predicted_price"])),
                 (COMPARABLE_ID, float(comparable[split, transaction_id]["predicted_price"])),
             ):
-                range_result = intervals.get(transaction_id) if model_id == MODEL_ID and split == "test" else None
+                range_result = intervals.get(transaction_id) if model_id == selected_id and split == "test" else None
+                comparable_result = comparable[split, transaction_id]
+                if range_result:
+                    lower_estimate = range_result["lower_estimate"]
+                    upper_estimate = range_result["upper_estimate"]
+                elif model_id == COMPARABLE_ID:
+                    lower_estimate = float(comparable_result["lower_estimate"])
+                    upper_estimate = float(comparable_result["upper_estimate"])
+                else:
+                    lower_estimate = upper_estimate = None
                 metric_inputs.append({
                     "model_id": model_id, "dataset_split": split, "transaction_id": transaction_id,
                     "predicted_price": predicted, "actual_price": actual,
-                    "lower_estimate": range_result["lower_estimate"] if range_result else None,
-                    "upper_estimate": range_result["upper_estimate"] if range_result else None,
+                    "lower_estimate": lower_estimate, "upper_estimate": upper_estimate,
                 })
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in metric_inputs:
@@ -184,17 +240,19 @@ def run(root: Path) -> dict:
         for (model_id, split), entries in sorted(grouped.items())
     ]
     segment_rows = group_metrics(group_inputs, train, by_id, models)
-    blend_test_metric = next(row for row in metric_rows if row["model_id"] == MODEL_ID and row["dataset_split"] == "test")
+    selected_test_metric = next(row for row in metric_rows if row["model_id"] == selected_id and row["dataset_split"] == "test")
     mean_nominal = statistics.mean(row["nominal_coverage_pct"] for row in range_rows)
-    observed = float(blend_test_metric["interval_coverage_pct"])
+    observed = float(selected_test_metric["interval_coverage_pct"])
     range_status = "pilot_tolerance_pass" if abs(observed - mean_nominal) <= 5 else "coverage_needs_review"
     last_source_month = max(row["transaction_month"] for row in rows)
     source_run = json.loads((root / "reports/phase_1_resale_model/03_duckdb_build_summary.json").read_text(encoding="utf-8"))
     release = {
-        "status": "national_candidate", "model_id": MODEL_ID,
+        "status": "national_candidate", "model_id": selected_id,
+        "baseline_gate": gate,
+        "model_name": selected_model["model_name"],
         "built_at_utc": datetime.now(timezone.utc).isoformat(),
-        "ridge_weight": ridge_weight, "comparable_weight": round(1 - ridge_weight, 2),
-        "ridge_artifact": "models/phase_1_resale_model/06_ridge_resale_price.joblib",
+        "model_artifact": selection["artifacts"][selected_id],
+        "feature_columns": selection["feature_columns"],
         "comparable_method": "BASELINE_COMPARABLE_SALES_V1",
         "source_build_run_id": source_run["run_id"],
         "latest_source_transaction_month": last_source_month.isoformat(),
@@ -210,9 +268,9 @@ def run(root: Path) -> dict:
         "test_observed_coverage_pct": round(observed, 2),
         "test_mean_nominal_coverage_pct": round(mean_nominal, 2),
         "test_mean_interval_width_sgd": round(statistics.mean(row["interval_width"] for row in range_rows), 2),
-        "test_mae_sgd": blend_test_metric["mae"],
+        "test_mae_sgd": selected_test_metric["mae"],
         "test_rows": len(test),
-        "limitation": "National candidate requiring review of town-level validation metrics. Test period and prior model results were inspected during development. Ranges do not reflect unobserved renovation, view, exact floor, or transaction-specific negotiation.",
+        "limitation": "The winning model is chosen on validation MAE and its residual range is calibrated on that same validation period, so range coverage may be optimistic. Test and prior model results were inspected during development. Review town-level validation metrics; ranges omit renovation, view, exact floor, and transaction-specific negotiation.",
         "outputs": {
             "ranges": "reports/phase_1_resale_model/09_blend_price_ranges.csv",
             "metrics": "reports/phase_1_resale_model/09_blend_backtest_metrics.csv",
@@ -254,8 +312,12 @@ def main() -> int:
     except (ValueError, OSError, duckdb.Error) as error:
         print(f"Blend calibration failed: {error}", file=sys.stderr)
         return 1
+    if result["status"] != "national_candidate":
+        print(json.dumps(result, indent=2))
+        print("Model release held: the comparable-sales baseline performed better on at least one evaluation split.", file=sys.stderr)
+        return 1
     print(json.dumps({key: result[key] for key in (
-        "status", "model_id", "test_mae_sgd", "range_status", "calibration_method", "test_observed_coverage_pct",
+        "status", "model_id", "model_name", "test_mae_sgd", "range_status", "calibration_method", "test_observed_coverage_pct",
         "test_mean_nominal_coverage_pct", "test_mean_interval_width_sgd", "test_rows", "outputs")}, indent=2))
     return 0
 

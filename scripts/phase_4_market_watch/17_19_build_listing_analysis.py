@@ -12,12 +12,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import duckdb
-import joblib
 import numpy as np
 
 
 PHASE = "phase_4_market_watch"
-MODEL_ID = "NATIONAL_RIDGE_COMPARABLE_BLEND_V1"
 STREET_WORDS = {
     "AVE": "AVENUE", "AV": "AVENUE", "CRES": "CRESCENT", "DR": "DRIVE",
     "LN": "LANE", "RD": "ROAD", "ST": "STREET", "NTH": "NORTH",
@@ -181,12 +179,17 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
     trainer = load_module(phase1 / "06_train_resale_models.py", "phase4_models")
     baseline = load_module(phase1 / "04_build_baselines.py", "phase4_baseline")
     release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
+    required_release_fields = {"model_id", "model_artifact", "feature_columns", "residual_offsets_sgd"}
+    if release.get("status") != "national_candidate" or not required_release_fields.issubset(release):
+        raise ValueError("No approved model release is available; review the Step 09 release report")
     if release["source_build_run_id"] != metadata["pipeline_run_id"]:
         raise ValueError("property.duckdb changed after model calibration; rerun Phase 1 steps 04–09")
     month = date.today().replace(day=1)
     if month_number(month) - month_number(metadata["latest_month"]) > 12:
         raise ValueError("Transaction data is over 12 months old; refresh Phase 1 before valuation")
-    artifact = joblib.load(root / release["ridge_artifact"])
+    artifact_path = Path(release["model_artifact"])
+    if not artifact_path.is_absolute():
+        artifact_path = root / artifact_path
     flat_types = sorted({row["flat_type"] for row in transactions})
     block_names = {row["block_id"]: (row["block"], row["street"]) for row in block_lookup.values()}
     prepared = []
@@ -221,28 +224,33 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
             prepared.append((feature, scenario, assumptions, source))
     if prepared:
         names, vectors = trainer.feature_records([item[3] for item in prepared], flat_types)
-        if names != artifact["feature_columns"]:
-            raise ValueError("Feature schema differs from the saved Ridge model")
-        ridge_prices = artifact["pipeline"].predict(np.asarray(vectors, dtype=object))
+        if names != release.get("feature_columns"):
+            raise ValueError("Feature schema differs from the released model; rerun Phase 1 steps 06–09")
+        model_prices = trainer.predict_with_artifact(
+            artifact_path, release["model_id"], names, np.asarray(vectors, dtype=object),
+        )
     else:
-        ridge_prices = []
+        model_prices = []
     sales = [row for row in transactions if row["transaction_month"] < month]
     scenarios_by_listing = defaultdict(list)
-    for (feature, scenario, assumptions, source), ridge_raw in zip(prepared, ridge_prices):
+    for (feature, scenario, assumptions, source), model_raw in zip(prepared, model_prices):
         candidates, tier = baseline.select_comparables(
             source, [row for row in sales if row["flat_type"] == source["flat_type"]]
         )
         comparable_count = len(candidates)
         result = {"scenario": scenario["scenario"], "storey_range": scenario["storey_range"],
-                  "ridge_price": round(max(1.0, float(ridge_raw)), 2),
+                  "model_price": round(max(1.0, float(model_raw)), 2),
                   "comparable_count": comparable_count, "comparable_tier": tier,
                   "comparable_price": None, "point": None, "lower": None, "upper": None,
                   "comparables": []}
-        if comparable_count >= 3:
+        point = result["model_price"]
+        level = "97.5" if comparable_count < 5 else "95"
+        low_offset, high_offset = release["residual_offsets_sgd"][level]
+        result.update({"point": round(point, 2),
+                       "lower": round(max(1.0, point + low_offset), 2),
+                       "upper": round(point + high_offset, 2)})
+        if comparable_count:
             comparable_price = float(baseline.median_prediction(candidates)[0])
-            point = release["ridge_weight"] * result["ridge_price"] + release["comparable_weight"] * comparable_price
-            level = "97.5" if comparable_count < 5 else "95"
-            low_offset, high_offset = release["residual_offsets_sgd"][level]
             ranked = []
             for sale in candidates:
                 distance = baseline.distance_m(source, sale)
@@ -253,9 +261,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                 ranked.append((score, sale, distance))
             ranked.sort(key=lambda item: (item[0], item[1]["transaction_id"]))
             result.update({
-                "comparable_price": round(comparable_price, 2), "point": round(point, 2),
-                "lower": round(max(1.0, point + low_offset), 2),
-                "upper": round(point + high_offset, 2),
+                "comparable_price": round(comparable_price, 2),
                 "comparables": [{"transaction_id": sale["transaction_id"],
                                   "block": block_names.get(sale["block_id"], (None, None))[0],
                                   "street": block_names.get(sale["block_id"], (None, None))[1],
@@ -274,7 +280,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         valid = [row for row in scenarios if row["point"] is not None]
         if not valid:
             output.append({**{field: feature[field] for field in ("source_site", "run_id", "listing_id")},
-                           "valuation_status": "not_valued", "model_id": MODEL_ID,
+                           "valuation_status": "not_valued", "model_id": release["model_id"],
                            "valuation_month": month, "assumption_method": None,
                            "scenario_count": len(scenarios), "point_estimate_sgd": None,
                            "lower_estimate_sgd": None, "upper_estimate_sgd": None,
@@ -291,7 +297,15 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         asking = feature.get("asking_price_sgd")
         delta = asking - point if asking is not None else None
         pct = delta / point * 100 if delta is not None and point else None
-        confidence = "scenario_range" if len(valid) >= 2 else "single_scenario_low_confidence"
+        minimum_comparables = min(row["comparable_count"] for row in valid)
+        confidence = (
+            "limited_comparable_evidence" if minimum_comparables < 3
+            else "scenario_range" if len(valid) >= 2
+            else "single_scenario_low_confidence"
+        )
+        valuation_note = "Floor and flat model are inferred; verify unit details before relying on the estimate."
+        if minimum_comparables < 3:
+            valuation_note += " Fewer than three comparable sales support this estimate."
         output.append({**{field: feature[field] for field in ("source_site", "run_id", "listing_id")},
                        "valuation_status": "estimated", "model_id": release["model_id"],
                        "valuation_month": month, "assumption_method": "same-block history; low/middle/high observed storeys",
@@ -300,9 +314,9 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                        "asking_price_sgd": asking,
                        "asking_premium_discount_sgd": round(delta, 2) if delta is not None else None,
                        "asking_premium_discount_pct": round(pct, 2) if pct is not None else None,
-                       "minimum_comparable_count": min(row["comparable_count"] for row in valid),
+                       "minimum_comparable_count": minimum_comparables,
                        "confidence_label": confidence, "scenarios_json": json.dumps(scenarios),
-                       "valuation_note": "Floor and flat model are inferred; verify unit details before relying on the estimate."})
+                       "valuation_note": valuation_note})
     return output
 
 
@@ -408,7 +422,7 @@ def build(root: Path) -> dict:
     summary = {"status": "success", "built_at_utc": built_at,
                "source_runs": [{"source_site": site, "run_id": run} for site, run in runs],
                "source_property_pipeline_run_id": metadata["pipeline_run_id"],
-               "model_id": MODEL_ID, "counts": counts,
+               "model_id": json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))["model_id"], "counts": counts,
                "tables": ["listing_block_matches", "listing_features", "listing_valuations"],
                "limitations": [
                    "Listing cards do not provide exact floor or verified flat model.",

@@ -10,10 +10,12 @@ import sys
 import threading
 import time
 import urllib.request
+import json
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, END, StringVar, Tk, messagebox
+from tkinter import BooleanVar, Canvas, END, PanedWindow, StringVar, Tk, messagebox
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -22,6 +24,7 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DASHBOARD_URL = "http://127.0.0.1:8501"
 ONEMAP_REGISTRATION_URL = "https://www.onemap.gov.sg/apidocs/register"
 ONEMAP_AUTHENTICATION_URL = "https://www.onemap.gov.sg/apidocs/authentication"
+ONEMAP_TOKEN_URL = "https://www.onemap.gov.sg/api/auth/post/getToken"
 PROPERTYGURU_HDB_URL = "https://www.propertyguru.com.sg/hdb-for-sale"
 NINETY_NINE_HDB_URL = "https://www.99.co/singapore/sale/hdb"
 SRX_HDB_URL = "https://www.srx.com.sg/singapore-property-listings/hdb-for-sale"
@@ -126,7 +129,7 @@ def build_workflows(project_root: Path, force_download: bool = False) -> dict[st
             ("06_run_resale_models.ps1", "Train resale-price models"),
             ("07_run_phase1_diagnostics.ps1", "Run model diagnostics"),
             ("08_run_hybrid_experiment.ps1", "Evaluate the hybrid estimate"),
-            ("09_run_blend_calibration.ps1", "Calibrate the accepted blend"),
+            ("09_run_blend_calibration.ps1", "Calibrate the selected model"),
         )
     )
     dashboard_data_commands = (
@@ -188,6 +191,29 @@ def build_workflows(project_root: Path, force_download: bool = False) -> dict[st
             dashboard_data_commands,
         ),
     }
+
+
+def diagnostics_review_path(project_root: Path) -> Path:
+    """Return the review only when it belongs to the current model selection."""
+    reports = project_root / "reports" / "phase_1_resale_model"
+    review_path = reports / "07_phase1_exit_review.json"
+    selection_path = reports / "06_model_selection.json"
+    if not review_path.is_file():
+        raise ValueError("No diagnostics review is available yet. Run Button 4 first.")
+    if not selection_path.is_file():
+        raise ValueError("The model selection report is missing. Run Button 4 first.")
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        selection = json.loads(selection_path.read_text(encoding="utf-8"))
+        selected_model_id = selection["selected_model"]["model_id"]
+        reviewed_model_id = review["selected_model_id"]
+        trained_at = datetime.fromisoformat(selection["built_at_utc"])
+        reviewed_at = datetime.fromisoformat(review["reviewed_at_utc"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("The diagnostics review could not be read. Run model diagnostics again.") from error
+    if reviewed_model_id != selected_model_id or reviewed_at < trained_at:
+        raise ValueError("The saved diagnostics review is from an earlier training run. Wait for Button 4's diagnostics step to finish, or run diagnostics again.")
+    return review_path
 
 
 class WorkflowRunner:
@@ -394,6 +420,8 @@ class ControlCenter:
         self.root = root
         self.project_root = project_root
         self.force_download = BooleanVar(value=False)
+        self.onemap_email = StringVar()
+        self.onemap_password = StringVar()
         self.onemap_token = StringVar()
         self.status = StringVar(value="Ready")
         self.runner = WorkflowRunner(project_root)
@@ -406,21 +434,57 @@ class ControlCenter:
 
     def _build_window(self) -> None:
         self.root.title("PropertyProject Control Center")
-        self.root.geometry("1000x720")
-        self.root.minsize(850, 620)
+        window_height = max(480, min(720, self.root.winfo_screenheight() - 80))
+        self.root.geometry(f"1000x{window_height}")
+        self.root.minsize(850, 480)
         container = ttk.Frame(self.root, padding=16)
         container.pack(fill="both", expand=True)
+        self.content_panes = PanedWindow(
+            container, orient="vertical", sashwidth=8, sashpad=2,
+            sashrelief="raised", relief="flat", borderwidth=0,
+            showhandle=True, cursor="sb_v_double_arrow",
+        )
+        self.content_panes.pack(fill="both", expand=True)
+        controls_pane = ttk.Frame(self.content_panes)
+        activity_pane = ttk.Frame(self.content_panes)
+        self.content_panes.add(controls_pane, minsize=190, stretch="always")
+        self.content_panes.add(activity_pane, minsize=145, stretch="always")
+        self.root.after_idle(self._position_activity_divider)
+
+        self.controls_canvas = Canvas(
+            controls_pane, highlightthickness=0, borderwidth=0,
+            background=self.root.cget("background"),
+        )
+        controls_scrollbar = ttk.Scrollbar(
+            controls_pane, orient="vertical", command=self.controls_canvas.yview,
+        )
+        self.controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_scrollbar.pack(side="right", fill="y")
+        self.controls_canvas.pack(side="left", fill="both", expand=True)
+        controls_content = ttk.Frame(self.controls_canvas)
+        controls_window = self.controls_canvas.create_window(
+            (0, 0), window=controls_content, anchor="nw",
+        )
+        controls_content.bind(
+            "<Configure>",
+            lambda _event: self.controls_canvas.configure(scrollregion=self.controls_canvas.bbox("all")),
+        )
+        self.controls_canvas.bind(
+            "<Configure>",
+            lambda event: self._resize_controls(event.width, controls_window),
+        )
+        self.root.bind_all("<MouseWheel>", self._scroll_controls, add="+")
 
         ttk.Label(
-            container, text="PropertyProject Control Center",
+            controls_content, text="PropertyProject Control Center",
             font=("Segoe UI", 18, "bold"),
         ).pack(anchor="w")
         ttk.Label(
-            container,
+            controls_content,
             text="Recommended order: 1, 2, 3, 4, 5, 6, then 7. The 1–4 button runs the first four steps together.",
         ).pack(anchor="w", pady=(2, 12))
 
-        credentials = ttk.LabelFrame(container, text="Collection settings", padding=10)
+        credentials = ttk.LabelFrame(controls_content, text="Collection settings", padding=10)
         credentials.pack(fill="x")
         ttk.Label(credentials, text="OneMap token").grid(row=0, column=0, sticky="w")
         ttk.Entry(credentials, textvariable=self.onemap_token, show="•", width=55).grid(
@@ -429,14 +493,26 @@ class ControlCenter:
         ttk.Checkbutton(
             credentials, text="Download fresh data.gov.sg files",
             variable=self.force_download,
-        ).grid(row=0, column=2, sticky="w")
+        ).grid(row=0, column=2, sticky="w", padx=(8, 0))
         credentials.columnconfigure(1, weight=1)
         ttk.Label(
             credentials,
             text="The token is passed only to the running process and is not saved by this app.",
-        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(credentials, text="OneMap email").grid(row=2, column=0, sticky="w", pady=(7, 0))
+        ttk.Entry(credentials, textvariable=self.onemap_email, width=55).grid(
+            row=2, column=1, sticky="ew", padx=8, pady=(7, 0),
+        )
+        ttk.Button(
+            credentials, text="Reauthenticate with OneMap",
+            command=self._reauthenticate_onemap,
+        ).grid(row=2, column=2, sticky="w", pady=(7, 0))
+        ttk.Label(credentials, text="OneMap password").grid(row=3, column=0, sticky="w")
+        ttk.Entry(credentials, textvariable=self.onemap_password, show="•", width=55).grid(
+            row=3, column=1, sticky="ew", padx=8,
+        )
         token_help = ttk.Frame(credentials)
-        token_help.grid(row=2, column=1, columnspan=2, sticky="w", pady=(7, 0))
+        token_help.grid(row=4, column=1, columnspan=3, sticky="w", pady=(7, 0))
         ttk.Button(
             token_help, text="How to get a OneMap token", command=self._show_onemap_help,
         ).pack(side="left")
@@ -448,19 +524,17 @@ class ControlCenter:
             command=lambda: webbrowser.open(ONEMAP_AUTHENTICATION_URL),
         ).pack(side="left", padx=(6, 0))
 
-        actions = ttk.Frame(container)
+        actions = ttk.Frame(controls_content)
         actions.pack(fill="x", pady=12)
-        self._workflow_group(actions, "Official data", [
+        official_frame = self._workflow_group(actions, "Official data", [
             "data_gov", "onemap", "official_refresh",
         ], column=0)
-        self._workflow_group(actions, "Processing", [
+        processing_frame = self._workflow_group(actions, "Processing", [
             "build_database", "model_pipeline", "dashboard_data",
         ], column=1)
-        self._workflow_group(actions, "Listings and dashboard", [
+        listings_frame = self._workflow_group(actions, "Listings and dashboard", [
             "chrome_collector",
         ], column=2)
-        for column in range(3):
-            actions.columnconfigure(column, weight=1)
 
         dashboard_frame = ttk.Frame(actions)
         dashboard_frame.grid(row=1, column=2, sticky="ew", padx=5, pady=(6, 0))
@@ -478,16 +552,19 @@ class ControlCenter:
         ttk.Button(
             dashboard_frame, text="Stop dashboard", command=self.dashboard.stop,
         ).pack(fill="x", pady=(4, 0))
+        self.action_frames = (official_frame, processing_frame, listings_frame)
+        self.dashboard_buttons_frame = dashboard_frame
+        self.actions_frame = actions
 
-        status_frame = ttk.LabelFrame(container, text="Local files", padding=8)
+        status_frame = ttk.LabelFrame(controls_content, text="Local files", padding=8)
         status_frame.pack(fill="x", pady=(0, 10))
-        self.file_status = ttk.Label(status_frame, text="")
+        self.file_status = ttk.Label(status_frame, text="", wraplength=600)
         self.file_status.pack(side="left", anchor="w")
         ttk.Button(
             status_frame, text="Refresh status", command=self._refresh_file_status,
         ).pack(side="right")
 
-        log_header = ttk.Frame(container)
+        log_header = ttk.Frame(activity_pane)
         log_header.pack(fill="x")
         ttk.Label(log_header, text="Activity log", font=("Segoe UI", 10, "bold")).pack(side="left")
         self.cancel_button = ttk.Button(
@@ -495,13 +572,53 @@ class ControlCenter:
             state="disabled",
         )
         self.cancel_button.pack(side="right")
-        self.log = ScrolledText(container, height=18, wrap="word", font=("Consolas", 9))
+        self.log = ScrolledText(activity_pane, height=18, wrap="word", font=("Consolas", 9))
         self.log.pack(fill="both", expand=True, pady=(5, 8))
-        self.progress = ttk.Progressbar(container, mode="indeterminate")
+        self.progress = ttk.Progressbar(activity_pane, mode="indeterminate")
         self.progress.pack(fill="x")
-        ttk.Label(container, textvariable=self.status).pack(anchor="w", pady=(5, 0))
+        ttk.Label(activity_pane, textvariable=self.status).pack(anchor="w", pady=(5, 0))
 
-    def _workflow_group(self, parent: ttk.Frame, title: str, keys: list[str], column: int) -> None:
+    def _position_activity_divider(self) -> None:
+        available_height = self.content_panes.winfo_height()
+        if available_height > 1:
+            self.content_panes.sash_place(0, 0, int(available_height * 0.58))
+
+    def _resize_controls(self, width: int, window_id: int) -> None:
+        self.controls_canvas.itemconfigure(window_id, width=width)
+        if not hasattr(self, "action_frames"):
+            return
+        layout = "wide" if width >= 1200 else "narrow"
+        if getattr(self, "_actions_layout", None) == layout:
+            return
+        official, processing, listings = self.action_frames
+        for frame in (*self.action_frames, self.dashboard_buttons_frame):
+            frame.grid_forget()
+        official.grid(row=0, column=0, sticky="nsew", padx=5)
+        processing.grid(row=0, column=1, sticky="nsew", padx=5)
+        if layout == "wide":
+            listings.grid(row=0, column=2, sticky="nsew", padx=5)
+            self.dashboard_buttons_frame.grid(row=1, column=2, sticky="ew", padx=5, pady=(6, 0))
+        else:
+            listings.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(6, 0))
+            self.dashboard_buttons_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=(6, 0))
+        self.actions_frame.columnconfigure(0, weight=1)
+        self.actions_frame.columnconfigure(1, weight=1)
+        self.actions_frame.columnconfigure(2, weight=1 if layout == "wide" else 0)
+        self._actions_layout = layout
+
+    def _scroll_controls(self, event) -> str | None:
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        while widget is not None and widget != self.controls_canvas:
+            widget = widget.master
+        if widget != self.controls_canvas:
+            return None
+        steps = -int(event.delta / 120)
+        if steps == 0 and event.delta:
+            steps = -1 if event.delta > 0 else 1
+        self.controls_canvas.yview_scroll(steps, "units")
+        return "break"
+
+    def _workflow_group(self, parent: ttk.Frame, title: str, keys: list[str], column: int) -> ttk.LabelFrame:
         frame = ttk.LabelFrame(parent, text=title, padding=8)
         frame.grid(row=0, column=column, sticky="nsew", padx=5)
         workflows = build_workflows(self.project_root, self.force_download.get())
@@ -512,6 +629,20 @@ class ControlCenter:
             )
             button.pack(fill="x", pady=2)
             self.workflow_buttons.append(button)
+            if key == "model_pipeline":
+                self.review_button = ttk.Button(
+                    frame, text="Open model diagnostics review",
+                    command=self._open_diagnostics_review,
+                )
+                self.review_button.pack(fill="x", pady=2)
+        return frame
+
+    def _open_diagnostics_review(self) -> None:
+        try:
+            review_path = diagnostics_review_path(self.project_root)
+            os.startfile(review_path)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Cannot open diagnostics review", str(error))
 
     def _start(self, key: str) -> None:
         database_workflows = {"official_refresh", "build_database", "model_pipeline", "dashboard_data"}
@@ -539,6 +670,57 @@ class ControlCenter:
             "5. Run '2. Refresh OneMap and amenities' or '1–4. Run full official-data refresh'.\n\n"
             "OneMap currently documents tokens as valid for three days. Generate a new token after expiry. "
             "The Control Center does not save your token or account password.",
+        )
+
+    def _reauthenticate_onemap(self) -> None:
+        email = self.onemap_email.get().strip()
+        password = self.onemap_password.get()
+        if not email or not password:
+            messagebox.showerror(
+                "OneMap login required",
+                "Enter your registered OneMap email and password first.",
+            )
+            return
+        self.status.set("Requesting a new OneMap access token...")
+        threading.Thread(
+            target=self._request_onemap_token,
+            args=(email, password),
+            daemon=True,
+        ).start()
+
+    def _request_onemap_token(self, email: str, password: str) -> None:
+        try:
+            payload = json.dumps({"email": email, "password": password}).encode("utf-8")
+            request = urllib.request.Request(
+                ONEMAP_TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            token = str(result.get("access_token", "")).strip()
+            if not token:
+                raise RuntimeError("OneMap did not return an access token.")
+            self.root.after(0, lambda: self._onemap_token_received(token))
+        except Exception as error:
+            self.root.after(0, lambda: self._onemap_auth_failed(str(error)))
+
+    def _onemap_token_received(self, token: str) -> None:
+        self.onemap_token.set(token)
+        self.onemap_password.set("")
+        self.status.set("OneMap reauthentication succeeded; token ready for the next refresh.")
+        messagebox.showinfo(
+            "OneMap reauthenticated",
+            "A new access token was received. Run step 2 or the full official refresh.",
+        )
+
+    def _onemap_auth_failed(self, message: str) -> None:
+        self.onemap_password.set("")
+        self.status.set("OneMap reauthentication failed")
+        messagebox.showerror(
+            "OneMap reauthentication failed",
+            "Check the email and password, then try again.\n\n" + message,
         )
 
     def _start_dashboard(self) -> None:

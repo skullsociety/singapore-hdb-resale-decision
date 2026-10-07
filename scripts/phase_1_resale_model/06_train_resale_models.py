@@ -24,7 +24,7 @@ try:
     import joblib
     import numpy as np
     from sklearn.compose import ColumnTransformer
-    from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+    from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingRegressor, RandomForestRegressor
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import Ridge
     from sklearn.pipeline import Pipeline
@@ -55,13 +55,13 @@ MODEL_SPECS = {
     },
     "ML_SKLEARN_QUANTILE_P50_V1": {
         "name": "sklearn_quantile_p50_v1",
-        "description": "Three gradient boosting quantile regressors; P50 is the point estimate and P10/P90 form an estimated range.",
+        "description": "Three histogram-based gradient boosting quantile regressors with early stopping; P50 is the point estimate and P10/P90 form an estimated range.",
         "artifact": "06_sklearn_quantiles_resale_price.joblib",
     },
-    "ML_RANDOM_FOREST_ABSOLUTE_ERROR_V1": {
-        "name": "random_forest_absolute_error_v1",
-        "description": "Random forest using absolute-error splits and median leaf predictions, trained for MAE-focused resale-price estimation.",
-        "artifact": "06_random_forest_absolute_error_resale_price.joblib",
+    "ML_RANDOM_FOREST_SQUARED_ERROR_V1": {
+        "name": "random_forest_squared_error_v1",
+        "description": "Random forest using squared-error splits and mean leaf predictions, with 80 trees; evaluated by validation MAE.",
+        "artifact": "06_random_forest_squared_error_resale_price.joblib",
     },
 }
 if CatBoostRegressor is not None:
@@ -81,10 +81,11 @@ KNOWN_ML_MODEL_IDS = (
     "ML_RIDGE_RESALE_PRICE_V1",
     "ML_GRADIENT_BOOSTING_RESALE_PRICE_V1",
     "ML_SKLEARN_QUANTILE_P50_V1",
-    "ML_RANDOM_FOREST_ABSOLUTE_ERROR_V1",
+    "ML_RANDOM_FOREST_SQUARED_ERROR_V1",
     "ML_CATBOOST_RESALE_PRICE_V1",
     "ML_CATBOOST_QUANTILE_P50_V1",
 )
+OBSOLETE_MODEL_IDS = ("ML_RANDOM_FOREST_ABSOLUTE_ERROR_V1",)
 BASELINE_NAMES = {
     "BASELINE_RECENT_FLAT_TYPE_24M_V1": "recent_flat_type_median_24m",
     "BASELINE_COMPARABLE_SALES_V1": "comparable_sales_v1",
@@ -94,7 +95,8 @@ PREDICTION_COLUMNS = [
     "predicted_price", "actual_price", "absolute_error", "absolute_percentage_error",
     "lower_estimate", "upper_estimate", "comparable_count", "comparable_tier", "valuation_month",
 ]
-CAT_COLUMNS = ["flat_type", "flat_model"]
+CAT_COLUMNS = ["town", "flat_type", "flat_model"]
+CATBOOST_EARLY_STOPPING_ROUNDS = 50
 AMENITIES = [
     "primary_schools", "childcare_centres", "healthcare_clinics", "polyclinics",
     "hospitals", "community_clubs", "hawker_centres", "mrt_lrt_stations",
@@ -156,7 +158,8 @@ def feature_records(rows: list[dict], train_flat_types: list[str]) -> tuple[list
         month = as_date(row["transaction_month"])
         max_floor = float(row["max_floor_lvl"] or 0)
         storey = float(row["storey_midpoint"] or 0)
-        nearest_mrt = float(row["nearest_mrt_lrt_stations_m"] or 0)
+        nearest_mrt_value = row["nearest_mrt_lrt_stations_m"]
+        nearest_mrt = float(nearest_mrt_value) if nearest_mrt_value is not None else float("nan")
         vector: list[object] = []
         for name in CORE_NUMERIC:
             if name == "transaction_year":
@@ -167,11 +170,11 @@ def feature_records(rows: list[dict], train_flat_types: list[str]) -> tuple[list
                 age = float(row["building_age_at_transaction"] or 0)
                 value = age * age
             elif name == "log_nearest_mrt_m":
-                value = math.log1p(max(0.0, nearest_mrt))
+                value = math.log1p(max(0.0, nearest_mrt)) if math.isfinite(nearest_mrt) else float("nan")
             elif name == "mrt_within_400m":
-                value = float(nearest_mrt <= 400)
+                value = float(nearest_mrt <= 400) if math.isfinite(nearest_mrt) else float("nan")
             elif name == "mrt_within_800m":
-                value = float(nearest_mrt <= 800)
+                value = float(nearest_mrt <= 800) if math.isfinite(nearest_mrt) else float("nan")
             elif name == "month_sin":
                 value = math.sin(2 * math.pi * month.month / 12)
             elif name == "month_cos":
@@ -191,6 +194,33 @@ def feature_records(rows: list[dict], train_flat_types: list[str]) -> tuple[list
     return numeric_names + CAT_COLUMNS, output
 
 
+def predict_with_artifact(artifact_path: Path, model_id: str, feature_columns: list[str], matrix: np.ndarray) -> np.ndarray:
+    """Run the selected trained model using the artifact format saved in step 06."""
+    if model_id.startswith("ML_CATBOOST"):
+        if CatBoostRegressor is None:
+            raise RuntimeError("CatBoost is required to load the released model; install project requirements and rerun step 06")
+        estimator = CatBoostRegressor()
+        estimator.load_model(str(artifact_path))
+        raw_values = np.asarray(estimator.predict(matrix), dtype=float)
+        if "QUANTILE_P50" in model_id:
+            if raw_values.ndim != 2 or raw_values.shape[1] != 3:
+                raise ValueError("CatBoost quantile artifact did not return P10/P50/P90 predictions")
+            values = np.sort(raw_values, axis=1)[:, 1]
+        else:
+            values = raw_values.reshape(-1)
+    else:
+        artifact = joblib.load(artifact_path)
+        if artifact.get("feature_columns") != feature_columns:
+            raise ValueError("Feature schema differs from the selected model artifact; rerun step 06")
+        if "models" in artifact:
+            values = np.asarray(artifact["models"]["p50"].predict(matrix), dtype=float).reshape(-1)
+        else:
+            values = np.asarray(artifact["pipeline"].predict(matrix), dtype=float).reshape(-1)
+    if len(values) != len(matrix) or not np.isfinite(values).all():
+        raise ValueError(f"Selected model {model_id} returned invalid predictions")
+    return np.maximum(values, 1.0)
+
+
 def build_pipeline(model_kind: str, numeric_indices: list[int], categorical_indices: list[int]) -> Pipeline:
     numeric = Pipeline([
         ("impute", SimpleImputer(strategy="median")),
@@ -207,22 +237,24 @@ def build_pipeline(model_kind: str, numeric_indices: list[int], categorical_indi
     )
     if model_kind == "ridge":
         estimator = Ridge(alpha=20.0)
-    elif model_kind == "random_forest_absolute_error":
+    elif model_kind == "random_forest_squared_error":
         estimator = RandomForestRegressor(
-            n_estimators=100, criterion="absolute_error", max_features=0.6,
+            n_estimators=80, criterion="squared_error", max_features=0.6,
             min_samples_leaf=20, max_depth=16, max_samples=0.8,
-            n_jobs=4, random_state=42,
+            n_jobs=5, random_state=42, verbose=1,
         )
     elif model_kind.startswith("quantile_"):
         alpha = float(model_kind.removeprefix("quantile_"))
-        estimator = GradientBoostingRegressor(
-            loss="quantile", alpha=alpha, n_estimators=220, learning_rate=0.04,
-            max_depth=3, min_samples_leaf=15, random_state=42,
+        estimator = HistGradientBoostingRegressor(
+            loss="quantile", quantile=alpha, max_iter=220, learning_rate=0.04,
+            max_leaf_nodes=8, min_samples_leaf=15, random_state=42,
+            early_stopping=True, validation_fraction=0.1,
+            n_iter_no_change=15, tol=1e-4, verbose=2,
         )
     else:
         estimator = GradientBoostingRegressor(
             loss="huber", n_estimators=220, learning_rate=0.04, max_depth=3,
-            min_samples_leaf=15, random_state=42,
+            min_samples_leaf=15, random_state=42, verbose=1,
         )
     return Pipeline([("features", prep), ("model", estimator)])
 
@@ -366,9 +398,10 @@ def upsert_database(
     database: Path, registry_rows: list[tuple], predictions: list[dict], metric_rows: list[dict],
     error_rows: list[dict], quantile_rows: list[dict], selection: dict, selected_at: str,
 ) -> None:
-    model_ids = tuple([*KNOWN_ML_MODEL_IDS, *BASELINE_NAMES])
+    model_ids = tuple([*KNOWN_ML_MODEL_IDS, *OBSOLETE_MODEL_IDS, *BASELINE_NAMES])
     marks = ",".join("?" for _ in model_ids)
-    ml_marks = ",".join("?" for _ in KNOWN_ML_MODEL_IDS)
+    ml_model_ids = (*KNOWN_ML_MODEL_IDS, *OBSOLETE_MODEL_IDS)
+    ml_marks = ",".join("?" for _ in ml_model_ids)
     prediction_values = [tuple(row[column] for column in PREDICTION_COLUMNS) for row in predictions]
     metric_values = [(
         row["model_id"], row["dataset_split"], row["prediction_count"], row["mae"],
@@ -405,7 +438,7 @@ def upsert_database(
                 validation_mae DOUBLE, validation_rmse DOUBLE, selected_at_utc VARCHAR,
                 artifact_path VARCHAR, selection_reason VARCHAR)""")
             connection.execute(f"DELETE FROM model_predictions WHERE model_id IN ({marks})", model_ids)
-            connection.execute(f"DELETE FROM model_registry WHERE model_id IN ({ml_marks})", KNOWN_ML_MODEL_IDS)
+            connection.execute(f"DELETE FROM model_registry WHERE model_id IN ({ml_marks})", ml_model_ids)
             connection.execute(f"DELETE FROM model_evaluation_metrics WHERE model_id IN ({marks})", model_ids)
             connection.execute(f"DELETE FROM model_error_analysis WHERE model_id IN ({marks})", model_ids)
             connection.execute(f"DELETE FROM quantile_price_ranges WHERE model_id IN ({marks})", model_ids)
@@ -438,6 +471,7 @@ def upsert_database(
 
 def run(project_root: Path, skip_catboost: bool = False) -> dict:
     database = project_root / "data" / "property.duckdb"
+    print("Loading transactions and baseline predictions...", flush=True)
     rows = read_transactions(database)
     train = [row for row in rows if row["dataset_split"] == "train"]
     validation = [row for row in rows if row["dataset_split"] == "validation"]
@@ -445,10 +479,18 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     if not train or not validation or not test:
         raise ValueError("Training, validation, and test splits are all required.")
     baseline_predictions = read_baselines(project_root / "data" / "model_ready" / "baseline_predictions.csv")
+    print(
+        f"Loaded {len(rows):,} transactions: {len(train):,} train, "
+        f"{len(validation):,} validation, {len(test):,} test.",
+        flush=True,
+    )
     y_train = np.asarray([float(row["resale_price"]) for row in train], dtype=float)
+    y_validation = np.asarray([float(row["resale_price"]) for row in validation], dtype=float)
     flat_types = sorted({str(row["flat_type"]) for row in train})
+    print("Building model features...", flush=True)
     column_names, all_x = feature_records(rows, flat_types)
     matrix = np.asarray(all_x, dtype=object)
+    print(f"Prepared {len(column_names):,} features for {len(rows):,} transactions.", flush=True)
     name_to_index = {name: index for index, name in enumerate(column_names)}
     numeric_indices = [name_to_index[name] for name in column_names if name not in CAT_COLUMNS]
     categorical_indices = [name_to_index[name] for name in CAT_COLUMNS]
@@ -467,18 +509,44 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     }
 
     train_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "train"]
+    validation_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "validation"]
     eval_indices = [index for index, row in enumerate(rows) if row["dataset_split"] in {"validation", "test"}]
     eval_matrix = matrix[eval_indices]
-    for model_id, spec in active_model_specs.items():
+    total_models = len(active_model_specs)
+    for model_index, (model_id, spec) in enumerate(active_model_specs.items(), start=1):
         is_catboost = model_id.startswith("ML_CATBOOST")
         is_quantile = "QUANTILE_P50" in model_id
+        print(
+            f"Model {model_index}/{total_models}: fitting {spec['name']} "
+            f"({len(train):,} training rows)...",
+            flush=True,
+        )
         if is_catboost:
+            print(
+                f"  CatBoost: validation-based early stopping after "
+                f"{CATBOOST_EARLY_STOPPING_ROUNDS} rounds without improvement "
+                "(650-iteration maximum).",
+                flush=True,
+            )
             estimator = CatBoostRegressor(
                 iterations=650, depth=6, learning_rate=0.04, l2_leaf_reg=5,
                 loss_function=("MultiQuantile:alpha=0.1,0.5,0.9" if is_quantile else "MAE"),
-                random_seed=42, thread_count=4, verbose=False, allow_writing_files=False,
+                random_seed=42, thread_count=5, verbose=100, allow_writing_files=False,
             )
-            estimator.fit(matrix[train_indices], y_train, cat_features=categorical_indices)
+            estimator.fit(
+                matrix[train_indices], y_train,
+                cat_features=categorical_indices,
+                eval_set=(matrix[validation_indices], y_validation),
+                early_stopping_rounds=CATBOOST_EARLY_STOPPING_ROUNDS,
+                use_best_model=True,
+            )
+            best_iteration = estimator.get_best_iteration()
+            if best_iteration >= 0:
+                print(
+                    f"  CatBoost: retained {estimator.tree_count_} trees; "
+                    f"best validation iteration was {best_iteration + 1}.",
+                    flush=True,
+                )
             raw_prediction = np.asarray(estimator.predict(eval_matrix))
             artifact_path = artifact_dir / spec["artifact"]
             estimator.save_model(str(artifact_path))
@@ -495,10 +563,12 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
             quantile_models = {}
             quantile_values = {}
             for label, alpha in (("p10", 0.1), ("p50", 0.5), ("p90", 0.9)):
+                print(f"  Quantile {label}: fitting ({alpha:.0%})...", flush=True)
                 quantile_model = build_pipeline(f"quantile_{alpha}", numeric_indices, categorical_indices)
                 quantile_model.fit(matrix[train_indices], y_train)
                 quantile_models[label] = quantile_model
                 quantile_values[label] = quantile_model.predict(eval_matrix)
+                print(f"  Quantile {label}: fit and prediction complete.", flush=True)
             all_values = quantile_values["p50"]
             bounds = (quantile_values["p10"], quantile_values["p90"])
             artifact_path = artifact_dir / spec["artifact"]
@@ -506,8 +576,8 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         else:
             if model_id.startswith("ML_RIDGE"):
                 kind = "ridge"
-            elif model_id == "ML_RANDOM_FOREST_ABSOLUTE_ERROR_V1":
-                kind = "random_forest_absolute_error"
+            elif model_id == "ML_RANDOM_FOREST_SQUARED_ERROR_V1":
+                kind = "random_forest_squared_error"
             else:
                 kind = "gradient_boosting"
             estimator = build_pipeline(kind, numeric_indices, categorical_indices)
@@ -517,6 +587,7 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
             artifact_path = artifact_dir / spec["artifact"]
             joblib.dump({"pipeline": estimator, "feature_columns": column_names, "model_id": model_id}, artifact_path)
         artifacts[model_id] = str(artifact_path)
+        print(f"Model {model_index}/{total_models}: fit complete; evaluating validation and test rows...", flush=True)
         pred_pos = 0
         for split in ("validation", "test"):
             count = len(split_rows[split])
@@ -549,7 +620,9 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
             model_id, spec["name"], "machine_learning", "v1",
             f"{spec['description']} Artifact: models/phase_1_resale_model/{spec['artifact']}", built_at,
         ))
+        print(f"Model {model_index}/{total_models}: predictions and artifact saved.", flush=True)
 
+    print("Comparing model results and selecting by validation MAE...", flush=True)
     all_predictions = baseline_predictions + model_predictions
     prediction_ids = {prediction["transaction_id"] for prediction in baseline_predictions}
     for split, expected_rows in split_rows.items():
@@ -570,13 +643,13 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         metric_rows.append({"model_id": model_id, "model_name": model_name[model_id], "dataset_split": split,
                             **{key: round(value, 4) if value is not None else None for key, value in result.items()}})
     validation_ranking = sorted(
-        (row for row in metric_rows if row["dataset_split"] == "validation"),
+        (row for row in metric_rows if row["dataset_split"] == "validation" and row["model_id"] in MODEL_SPECS),
         key=lambda row: (row["mae"], row["rmse"]),
     )
     selected = validation_ranking[0]
     selected_artifact = artifacts.get(selected["model_id"], "")
     reason = (
-        f"Lowest validation MAE among the fitted point predictions and two existing baselines; "
+        f"Lowest validation MAE among the fitted machine-learning models; "
         f"ranked using RMSE as a tie-breaker. Test data was not used for selection."
     )
     selection = {
@@ -589,6 +662,7 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     cut_points = tuple(float(np.quantile(train_prices, q)) for q in (0.25, 0.5, 0.75))
     error_rows = error_analysis(all_predictions, row_by_id, cut_points)
     selected_at = datetime.now(timezone.utc).isoformat()
+    print("Saving predictions, metrics, and selected model to the database...", flush=True)
     upsert_database(database, registry_rows, all_predictions, metric_rows, error_rows, quantile_rows, selection, selected_at)
 
     model_prediction_path = project_root / "data" / "model_ready" / "06_ml_predictions.csv"
@@ -618,9 +692,10 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         "catboost_available": CatBoostRegressor is not None,
         "catboost_unavailable_reason": CATBOOST_IMPORT_ERROR,
         "catboost_skipped": bool(skip_catboost and CatBoostRegressor is not None),
-        "selection_rule": "lowest validation MAE across fitted point predictions and both baselines; RMSE tie-breaker; test is report-only",
+        "selection_rule": "lowest validation MAE across fitted machine-learning models; RMSE tie-breaker; test is report-only",
     }
     report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"Training complete. Selected model: {selection['model_name']}.", flush=True)
     return summary
 
 

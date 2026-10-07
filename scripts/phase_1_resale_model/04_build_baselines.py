@@ -76,8 +76,57 @@ def distance_m(left: dict, right: dict) -> float:
     return 12_742_000 * math.asin(min(1.0, math.sqrt(a)))
 
 
-def recent_flat_type_candidates(target: dict, history: list[dict]) -> list[dict]:
+def has_coordinates(record: dict) -> bool:
+    return record.get("latitude") is not None and record.get("longitude") is not None
+
+
+class ComparableHistory:
+    """Index prior sales by comparison group and cache each month's lookback."""
+
+    def __init__(self) -> None:
+        self.by_town_flat: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        self.by_town_flat_model: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+        self.by_block_town_flat_model: dict[tuple[str, str, str, str], list[dict]] = defaultdict(list)
+        self._recent_cache: dict[tuple[object, ...], list[dict]] = {}
+
+    def add(self, records: list[dict]) -> None:
+        for record in records:
+            self.by_town_flat[(record["town"], record["flat_type"])].append(record)
+            self.by_town_flat_model[(record["town"], record["flat_type"], record["flat_model"])].append(record)
+            self.by_block_town_flat_model[(record["block_id"], record["town"], record["flat_type"], record["flat_model"])].append(record)
+        # New rows can enter the active 24-month window after another month is processed.
+        self._recent_cache.clear()
+
+    def _recent(self, cache_key: tuple[object, ...], records: list[dict], cutoff: int) -> list[dict]:
+        if cache_key not in self._recent_cache:
+            self._recent_cache[cache_key] = [
+                record for record in records
+                if month_number(record["transaction_month"]) >= cutoff
+            ]
+        return self._recent_cache[cache_key]
+
+    def town_flat_recent(self, town: str, flat_type: str, cutoff: int) -> list[dict]:
+        key = (town, flat_type)
+        return self._recent(("town_flat", *key, cutoff), self.by_town_flat.get(key, []), cutoff)
+
+    def town_flat_model_recent(self, town: str, flat_type: str, flat_model: str, cutoff: int) -> list[dict]:
+        key = (town, flat_type, flat_model)
+        return self._recent(("town_flat_model", *key, cutoff), self.by_town_flat_model.get(key, []), cutoff)
+
+    def block_town_flat_model_recent(
+        self, block_id: str, town: str, flat_type: str, flat_model: str, cutoff: int,
+    ) -> list[dict]:
+        key = (block_id, town, flat_type, flat_model)
+        return self._recent(("block_town_flat_model", *key, cutoff), self.by_block_town_flat_model.get(key, []), cutoff)
+
+
+def recent_flat_type_candidates(target: dict, history: list[dict] | ComparableHistory) -> list[dict]:
     minimum_month = month_number(target["transaction_month"]) - LOOKBACK_MONTHS
+    if isinstance(history, ComparableHistory):
+        matches = history.town_flat_recent(target["town"], target["flat_type"], minimum_month)
+        if matches:
+            return matches
+        return history.by_town_flat.get((target["town"], target["flat_type"]), [])
     matches = [
         record for record in history
         if month_number(record["transaction_month"]) >= minimum_month
@@ -92,10 +141,28 @@ def recent_flat_type_candidates(target: dict, history: list[dict]) -> list[dict]
     ]
 
 
-def select_comparables(target: dict, history: list[dict]) -> tuple[list[dict], str]:
+def select_comparables(
+    target: dict, history: list[dict] | ComparableHistory,
+) -> tuple[list[dict], str]:
     """Return the first comparison tier with enough earlier transactions."""
     recent_cutoff = month_number(target["transaction_month"]) - LOOKBACK_MONTHS
-    recent = [record for record in history if month_number(record["transaction_month"]) >= recent_cutoff]
+    if isinstance(history, ComparableHistory):
+        recent = history.town_flat_recent(target["town"], target["flat_type"], recent_cutoff)
+        recent_model = history.town_flat_model_recent(
+            target["town"], target["flat_type"], target["flat_model"], recent_cutoff,
+        )
+        same_block = history.block_town_flat_model_recent(
+            target["block_id"], target["town"], target["flat_type"], target["flat_model"], recent_cutoff,
+        )
+    else:
+        recent = [
+            record for record in history
+            if month_number(record["transaction_month"]) >= recent_cutoff
+            and record["town"] == target["town"]
+            and record["flat_type"] == target["flat_type"]
+        ]
+        recent_model = [record for record in recent if record["flat_model"] == target["flat_model"]]
+        same_block = [record for record in recent_model if record["block_id"] == target["block_id"]]
 
     def similar(record: dict, *, area: float, storey: float, require_model: bool = False) -> bool:
         return (
@@ -111,24 +178,25 @@ def select_comparables(target: dict, history: list[dict]) -> tuple[list[dict], s
             "same_block_similar_24m",
             3,
             [
-                record for record in recent
-                if record["block_id"] == target["block_id"]
-                and similar(record, area=5, storey=3, require_model=True)
+                record for record in same_block
+                if similar(record, area=5, storey=3, require_model=True)
             ],
         ),
         (
             "nearby_similar_24m",
             5,
             [
-                record for record in recent
-                if similar(record, area=10, storey=6, require_model=True)
+                record for record in recent_model
+                if has_coordinates(target)
+                and has_coordinates(record)
+                and similar(record, area=10, storey=6, require_model=True)
                 and distance_m(target, record) <= 1_000
             ],
         ),
         (
             "town_similar_model_24m",
             8,
-            [record for record in recent if similar(record, area=15, storey=6, require_model=True)],
+            [record for record in recent_model if similar(record, area=15, storey=6, require_model=True)],
         ),
         (
             "town_similar_24m",
@@ -156,8 +224,8 @@ def load_records(connection: duckdb.DuckDBPyConnection) -> list[dict]:
         record["transaction_month"] = record["transaction_month"]
         record["floor_area_sqm"] = float(record["floor_area_sqm"])
         record["storey_midpoint"] = float(record["storey_midpoint"])
-        record["latitude"] = float(record["latitude"])
-        record["longitude"] = float(record["longitude"])
+        record["latitude"] = float(record["latitude"]) if record["latitude"] is not None else None
+        record["longitude"] = float(record["longitude"]) if record["longitude"] is not None else None
         record["resale_price"] = float(record["resale_price"])
         records.append(record)
     if not records:
@@ -170,9 +238,10 @@ def generate_predictions(records: list[dict]) -> list[dict]:
     for record in records:
         by_month[record["transaction_month"]].append(record)
 
-    history: list[dict] = []
+    history = ComparableHistory()
     predictions: list[dict] = []
-    for month in sorted(by_month):
+    months = sorted(by_month)
+    for month_index, month in enumerate(months, start=1):
         for target in by_month[month]:
             if target["dataset_split"] not in {"validation", "test"}:
                 continue
@@ -208,7 +277,13 @@ def generate_predictions(records: list[dict]) -> list[dict]:
                 })
         # All sales in a month enter history together. The input only identifies the
         # month, so no sale may use another sale from the same month as evidence.
-        history.extend(by_month[month])
+        history.add(by_month[month])
+        if month_index == 1 or month_index % 12 == 0 or month_index == len(months):
+            print(
+                f"Baseline progress: {month_index:,}/{len(months):,} transaction months; "
+                f"{len(predictions) // len(MODEL_DEFINITIONS):,} evaluation sales processed.",
+                flush=True,
+            )
     return predictions
 
 
@@ -337,6 +412,7 @@ def run(project_root: Path) -> dict:
         "status": "success",
         "built_at_utc": built_at,
         "prediction_count": len(predictions),
+        "transactions_missing_coordinates": sum(not has_coordinates(record) for record in records),
         "metrics": metrics,
         "prediction_file": str(prediction_path),
         "metrics_file": str(metric_csv_path),

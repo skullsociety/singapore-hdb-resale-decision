@@ -66,10 +66,10 @@ Open PowerShell in the project root (`PropertyProject`) and run the steps in ord
 # 8. Experiment with a Ridge/comparable blend and prior-price features
 .\scripts\phase_1_resale_model\08_run_hybrid_experiment.ps1
 
-# 9. Calibrate the national candidate blend and review its backtest
+# 9. Calibrate the validation-selected model and review its backtest
 .\scripts\phase_1_resale_model\09_run_blend_calibration.ps1
 
-# 10. Estimate a single flat using the saved national candidate configuration
+# 10. Estimate a single flat using the currently released model
 .\scripts\phase_1_resale_model\10_run_flat_valuation.ps1 -Block '106' -Street 'RIVERVALE WALK' -FlatType '4 ROOM' -FloorAreaSqm 100 -StoreyRange '01 TO 03' -FlatModel 'Model A' -RemainingLeaseYears 71.5
 
 # 11–14. Use the Buy and sell planning page in the dashboard after starting it in Step 24.
@@ -95,23 +95,23 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_1_resale_model/01_run_extraction.ps1` | Starts the data.gov.sg download. |
 | `scripts/phase_1_resale_model/01_extract_data_gov_sg.py` | Downloads HDB and supporting government datasets. |
 | `scripts/phase_1_resale_model/02_run_onemap_extraction.ps1` | Starts OneMap extraction and asks for the access token. |
-| `scripts/phase_1_resale_model/02_extract_onemap_locations.py` | Geocodes HDB blocks and collects amenity locations. |
+| `scripts/phase_1_resale_model/02_extract_onemap_locations.py` | Geocodes HDB blocks (including an Everton Park alternate spelling) and collects amenity locations. |
 | `scripts/phase_1_resale_model/03_run_duckdb_build.ps1` | Sets up Python packages and runs the database build. |
-| `scripts/phase_1_resale_model/03_build_duckdb.py` | Builds the research DuckDB tables and model features. |
+| `scripts/phase_1_resale_model/03_build_duckdb.py` | Builds the research DuckDB tables and model features, then reports all unusable source rows together. |
 | `scripts/phase_1_resale_model/04_run_baselines.ps1` | Runs baseline price evaluation. |
-| `scripts/phase_1_resale_model/04_build_baselines.py` | Builds comparable-sales and recent-median baselines. |
+| `scripts/phase_1_resale_model/04_build_baselines.py` | Builds comparable-sales and recent-median baselines using indexed prior-sale groups; skips distance comparisons when coordinates are missing. |
 | `scripts/phase_1_resale_model/05_run_feature_price_analysis.ps1` | Runs the feature/price analysis. |
-| `scripts/phase_1_resale_model/05_analyse_feature_price_correlations.py` | Reports how each feature relates to resale price. |
-| `scripts/phase_1_resale_model/06_run_resale_models.ps1` | Runs model training and comparison. |
-| `scripts/phase_1_resale_model/06_train_resale_models.py` | Trains and evaluates the resale-price models. |
+| `scripts/phase_1_resale_model/05_analyse_feature_price_correlations.py` | Reports feature associations with resale price, reusing price calculations and compact column data to reduce runtime and memory use. |
+| `scripts/phase_1_resale_model/06_run_resale_models.ps1` | Checks required packages and starts model training and comparison; CatBoost availability is handled by the trainer. |
+| `scripts/phase_1_resale_model/06_train_resale_models.py` | Trains and compares resale-price models using town, flat type and flat model as categories, selects the lowest validation-MAE trained model, and saves its artifact; includes an 80-tree squared-error random forest, quantile boosting with early stopping, progress updates, and 5-worker limits. |
 | `scripts/phase_1_resale_model/07_run_phase1_diagnostics.ps1` | Runs reliability and explanation checks. |
-| `scripts/phase_1_resale_model/07_phase1_diagnostics.py` | Examines errors, price ranges, and estimate explanations. |
+| `scripts/phase_1_resale_model/07_phase1_diagnostics.py` | Examines errors and price ranges; provides Ridge contributions when Ridge wins and clearly marks individual explanations unavailable for nonlinear models. |
 | `scripts/phase_1_resale_model/08_run_hybrid_experiment.ps1` | Runs the model/comparable blend experiment. |
-| `scripts/phase_1_resale_model/08_evaluate_hybrid.py` | Evaluates hybrid predictions and engineered features. |
-| `scripts/phase_1_resale_model/09_run_blend_calibration.ps1` | Runs calibration of the accepted blend. |
-| `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Calibrates and backtests the selected price estimate. |
+| `scripts/phase_1_resale_model/08_evaluate_hybrid.py` | Evaluates hybrid predictions and engineered features on matching sales with earlier comparables; reports excluded fold sales and batches bootstrap calculations to limit memory use. |
+| `scripts/phase_1_resale_model/09_run_blend_calibration.ps1` | Runs calibration and backtesting for the selected model. |
+| `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Requires the selected trained model to beat comparable sales on validation and test MAE, then calibrates ranges and creates the model release; records a held decision when the requirement fails. |
 | `scripts/phase_1_resale_model/10_run_flat_valuation.ps1` | Starts a valuation for one flat. |
-| `scripts/phase_1_resale_model/10_predict_flat.py` | Produces the single-flat estimate and supporting evidence. |
+| `scripts/phase_1_resale_model/10_predict_flat.py` | Prices one flat with the released model and shows comparable sales as supporting evidence. |
 | `scripts/phase_2_buyer_planner/11_buyer_cost_planner.py` | Calculates buyer cash, CPF, duties, and loan scenarios. |
 | `scripts/phase_2_buyer_planner/11_test_buyer_cost_planner.py` | Tests the buyer calculations. |
 | `scripts/phase_3_seller_planner/13_seller_proceeds_planner.py` | Calculates sale proceeds, CPF refunds, and shortfalls. |
@@ -134,7 +134,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_4_market_watch/17_19_test_listing_analysis.py` | Tests address normalization, block matching, flat-type inference, and storey scenarios used by Steps 17–19. |
 | `scripts/phase_4_market_watch/20_22_build_market_watch.py` | Performs Steps 20–22: saves a search profile, ranks current listings, tracks snapshots, and creates the market-watch report. |
 | `scripts/phase_4_market_watch/20_22_test_market_watch.py` | Tests preference validation, deal-ranking rules, and price-change tracking. |
-| `scripts/phase_5_stakeholder_dashboard/23_build_dashboard_views.py` | Builds the dashboard's stable DuckDB views and small configuration/metric tables. |
+| `scripts/phase_5_stakeholder_dashboard/23_build_dashboard_views.py` | Builds the dashboard's stable DuckDB views and includes performance metrics for the model in the current release. |
 | `scripts/phase_5_stakeholder_dashboard/23_test_dashboard_views.py` | Tests view availability, row identity, and category safeguards. |
 | `scripts/phase_5_stakeholder_dashboard/24_run_dashboard.ps1` | Starts the local Streamlit dashboard on this computer. |
 | `scripts/phase_5_stakeholder_dashboard/24_test_dashboard.py` | Opens the dashboard in Streamlit's test runner and checks for startup errors. |
@@ -153,11 +153,11 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `dashboard/phase_7/29_future_scenario_explorer.py` | Renders editable future-price scenarios, uncertainty bands, financing sensitivity, and historical backtests. |
 | `scripts/phase_7_future_scenarios/29_test_future_scenario_dashboard.py` | Tests that the future-price scenario dashboard page opens successfully. |
 | `scripts/phase_8_desktop_app/30_run_control_center.ps1` | Opens the Windows Control Center without a console window. |
-| `scripts/phase_8_desktop_app/30_control_center.py` | Provides the desktop interface for collection, processing, listing analysis and dashboard controls. |
+| `scripts/phase_8_desktop_app/30_control_center.py` | Provides scrollable desktop workflow controls, an activity log, and a button to open the current model diagnostics review. |
 | `scripts/phase_8_desktop_app/30_build_control_center_exe.ps1` | Optionally packages the Control Center as a Windows executable with PyInstaller. |
 | `scripts/phase_8_desktop_app/30_test_control_center.py` | Tests workflow definitions, command order and OneMap-token requirements. |
 
-Step 02 reuses cached HDB block geocoding results, but refreshes its amenity and supporting source extracts when rerun. Re-run steps 03–09 after refreshed source data so the database, features, baselines, models, and accepted pilot range are rebuilt. Step 10 prices one flat and can be rerun whenever needed.
+Step 02 reuses cached HDB block geocoding results, but refreshes its amenity and supporting source extracts when rerun. It retries block 1 Everton Park using the expanded spelling `EVERTON PARK`. Blocks still unmatched remain in the data with blank coordinates and blank location and amenity-distance features. The model pipeline handles these missing values without treating them as zero distance. Step 03 collects row-level address-join and invalid-value issues and reports them together at the end. Unsupported property and transaction rows stay in the downloaded source files but are left out of the research tables. Re-run steps 03–09 after refreshed source data so the database, features, baselines, selected model, and calibrated range are rebuilt. Step 10 prices one flat and can be rerun whenever needed.
 
 ## Buy and sell planning (steps 11–14)
 
@@ -205,7 +205,7 @@ The repeatable build adds three tables to the existing `data/listings.db`; it do
 | --- | --- | --- |
 | 17 | `listing_block_matches` | Links every listing in the latest complete run to an HDB block, with method, confidence and review notes. |
 | 18 | `listing_features` | Adds block details, coordinates, nearby amenities and an inferred flat type. |
-| 19 | `listing_valuations` | Applies the accepted Ridge/comparable blend and stores a price range, asking-price difference, confidence, scenarios and supporting comparable count. |
+| 19 | `listing_valuations` | Applies the released model and stores a price range, asking-price difference, confidence, scenarios and supporting comparable count. |
 
 PropertyGuru result cards do not reliably contain the exact flat model, lease commencement year or floor range. The build therefore infers flat type from floor area and evaluates storey scenarios observed in historical transactions for the matched block. These assumptions are recorded in the database. A listing is marked `not_valued` when the available evidence is insufficient; the build does not invent a price. The current Sengkang snapshot contains 753 listings: 752 block matches, 733 estimates and 20 withheld estimates. The machine-readable run summary is `reports/phase_4_market_watch/19_listing_analysis_summary.json`.
 
@@ -342,18 +342,21 @@ Use the Control Center in the following order. Button **1–4** is a shortcut fo
 | **1. Refresh data.gov.sg** | Downloads and validates the official HDB transaction and property data. | `01_run_extraction.ps1` → `01_extract_data_gov_sg.py` |
 | **2. Refresh OneMap and amenities** | Geocodes HDB blocks and refreshes location and amenity datasets. Requires a OneMap token. | `02_run_onemap_extraction.ps1` → `02_extract_onemap_locations.py` |
 | **3. Build database** | Rebuilds the nationwide DuckDB database and model-ready feature table from the collected files. | `03_run_duckdb_build.ps1` → `03_build_duckdb.py` |
-| **4. Run modelling pipeline** | Rebuilds baselines, feature analysis, models, diagnostics, hybrid evaluation, and calibration. | `04_run_baselines.ps1` through `09_run_blend_calibration.ps1` |
+| **4. Run modelling pipeline** | Rebuilds baselines, feature analysis, models, diagnostics, hybrid evaluation, and calibration. Diagnostics run automatically after training finishes. | `04_run_baselines.ps1` through `09_run_blend_calibration.ps1` |
+| **Open model diagnostics review** | Opens `reports/phase_1_resale_model/07_phase1_exit_review.json` for the current training run as soon as diagnostics finish, even while later modelling steps run. | Opens the saved report; runs no script |
 | **1–4. Run full official-data refresh** | Runs buttons 1, 2, 3 and 4 in that order. This is the normal button for a complete data and model refresh. | Steps 01–09 |
 | **5. Collect PropertyGuru HDB listings (via Chrome extension)** | Starts the local listing receiver and opens Chrome directly at PropertyGuru's nationwide HDB results page. The installed extension saves PropertyGuru cards into `data/listings.db`. | `15_open_chrome_with_collector.ps1` and the Chrome extension |
 | **Browse 99.co / SRX HDB listings (function not built in yet)** | Opens the selected site's nationwide HDB results page for viewing. Collection requires a dedicated adapter, parser, tests and permitted collection method for each site. | Browser URL only |
 | **6. Process listings and dashboard data** | Matches the latest complete listing snapshot, produces estimates and rankings, then rebuilds all dashboard data. | `17_19_build_listing_analysis.py`, `20_22_build_market_watch.py`, `23_build_dashboard_views.py`, `26_run_feature_explorer_build.ps1`, `28_run_future_scenario_build.ps1` |
 | **7. Start / open dashboard** | Starts the local Streamlit dashboard and opens it in a dedicated Chrome dashboard window, including the combined Buy and sell planning page. Closing that window stops the local dashboard. | `24_run_dashboard.ps1` → `24_streamlit_app.py` |
 
-**Stop dashboard**, **Refresh status**, the OneMap help buttons and **Cancel running workflow** are support controls. They do not advance the workflow order.
+**Open model diagnostics review**, **Stop dashboard**, **Refresh status**, the OneMap help buttons and **Cancel running workflow** are support controls. They do not advance the workflow order. The review button warns if the saved report belongs to an earlier training run.
 
-The OneMap section includes buttons for the official [registration page](https://www.onemap.gov.sg/apidocs/register) and [authentication guide](https://www.onemap.gov.sg/apidocs/authentication). Register an account, confirm it, generate an access token with the registered email address and password, then paste only the returned `access_token` into the masked field. OneMap currently documents each token as valid for three days. The Control Center passes the token to Step 02 for that run and does not save the token or the account password.
+The OneMap section includes a **Reauthenticate with OneMap** button plus links to the official [registration page](https://www.onemap.gov.sg/apidocs/register) and [authentication guide](https://www.onemap.gov.sg/apidocs/authentication). Enter the registered email and password, then click the reauthentication button. The Control Center requests a fresh token from OneMap, places it in the token field, and clears the password. OneMap currently documents each token as valid for three days. The token is passed to Step 02 for that run and neither the token nor the password is saved to disk.
 
 The Control Center orchestrates the existing numbered scripts; it does not duplicate their extraction or modelling logic. Step 7 opens the dashboard in a dedicated Chrome window, so closing that window also stops the dashboard process. **Stop dashboard** closes that window and stops the process directly. Closing the Control Center while a workflow or dashboard is running asks before stopping that process. Dashboard logs are written to `.local/control_center/dashboard.log`.
+
+The upper controls have their own vertical scrollbar and respond to the mouse wheel. The activity log scrolls separately below them.
 
 An executable is optional. First install PyInstaller in the project environment, then run the packaging script:
 
@@ -380,10 +383,10 @@ The launcher passes the token to the extractor for that run and does not save it
 |---|---|---|
 | HDB data.gov.sg extracts | Step 01 calls the public data.gov.sg download API, validates required columns, preserves raw copies, and creates nationwide processed files plus legacy pilot subsets. | Existing raw HDB files are reused by default; use `-ForceDownload` to refresh them. Someone must start the script. |
 | Supporting data.gov.sg extracts | Step 02 downloads the LTA MRT/LRT station-exit GeoJSON, MOE schools, ECDA childcare centres, and MOH CHAS clinics. | Someone must start step 02; it requires a valid OneMap token for its geocoding and location requests. |
-| OneMap data | Step 02 caches block geocoding results, reuses cached results, and saves raw theme/search responses and processed coordinate tables. | Each user must register for OneMap and supply a valid token. Token creation and renewal are not automated. Non-exact geocoding matches and amenity coverage still need review. |
+| OneMap data | Step 02 caches block geocoding results, retries 1 EVERTON PK as 1 EVERTON PARK, reuses cached results, and saves raw theme/search responses and processed coordinate tables. | Each user must register for OneMap and supply a valid token. Unmatched blocks remain with blank coordinates; check the extraction report and review non-exact geocoding matches and amenity coverage. |
 | DuckDB and features | Step 03 builds and validates the analytical database and model-ready feature data. | It is a separate command; it does not download or refresh source data. |
 | Baselines and analysis | Steps 04–05 build baselines and generate feature/price association reports. | They are separate commands and require the DuckDB build first. Associations are not causal effects. |
-| Model training and diagnostics | Steps 06–08 fit/evaluate candidate models and compare the blend. Step 09 calibrates a national candidate blend and backtests its range. Step 10 prices one flat with component estimates, a range, and comparable evidence. | A person must inspect town-level error, subgroup, coverage, and data-quality reports before accepting a national release. |
+| Model training and diagnostics | Steps 06–08 fit/evaluate candidate models and compare an optional blend. Step 09 releases the lowest-validation-MAE trained model and calibrates its range. Step 10 prices one flat with that released model and supporting comparable evidence. | A person must inspect town-level error, subgroup, coverage, and data-quality reports before accepting a national release. |
 | Buy and sell planning | The dashboard's combined planning page calculates buyer cash, CPF, BSD, user-entered ABSD, repayments, offer scenarios, seller proceeds, CPF refunds and a next-home comparison. | Users supply financial, lender, CPF and sale details. It cannot determine HFE or bank approval, CPF eligibility, grants, ABSD remission or sale settlement treatment. |
 | Scheduled refresh | Each stage has a PowerShell launcher and is rerunnable. | There is no end-to-end orchestrator, Windows Task Scheduler job, alerting, or automatic refresh cadence configured yet. |
 | Current listings and user experience | Step 15 collects Singapore HDB search cards from the Chrome extension and deduplicates listing IDs. | Install the extension once, start the local receiver for each run, and check its coverage report. The first pilot run covered 38 pages and 753 unique listings; the site's displayed count differed by one. |
@@ -395,7 +398,7 @@ The launcher passes the token to the extractor for that run and does not save it
 
 The latest recorded test evaluation is for Sengkang only. Ridge was selected using validation data; on the later test set its MAE was S$40,010, compared with S$39,679 for the comparable-sales baseline and S$63,885 for the recent town/flat-type median baseline. Thus Ridge beats the simple median but the comparable-sales baseline was slightly lower on this test. The test interval coverage was 90.88% versus a mean nominal level of 95.54%, with mean interval width around S$193,739. Results vary by flat and price segment; the range can be broad and some segments are unreliable. See `reports/phase_1_resale_model/07_phase1_exit_review.json` and `reports/phase_1_resale_model/07_reliability_breakdown.csv`.
 
-Step 08 found that a 45% Ridge / 55% comparable-sales blend had test MAE S$35,790, below either component on this snapshot. A Ridge model with recent-price features won validation but failed the later test check (MAE S$46,683). The blend is accepted for the Sengkang pilot. Step 09 calibrated its symmetric residual range: observed test coverage was 97.02% against 95.54% average nominal coverage, with a broad mean width of S$247,683. These outcomes are exploratory because earlier test results were inspected during development; confirm on future transactions before wider use.
+Step 08 remains an experiment and does not choose the production estimator. Step 06 selects the trained model with the lowest validation MAE. Step 09 releases it only if its MAE is strictly lower than the comparable-sales baseline on both validation and test sales. Otherwise Step 09 writes a held decision to `reports/phase_1_resale_model/09_blend_release.json` and exits with an error; flat and listing valuations require an approved release. The baseline remains available for comparison, but the current workflow does not publish it as a calibrated replacement. Test results in the existing reports were inspected during development, so confirm future performance on later transactions before wider use.
 
 Step 10 requires an existing block in the pilot database, flat type, area, and storey range. Supplying the actual flat model and lease details is preferable; if omitted, it infers them from earlier same-block sales and flags that assumption. Use `-Output 'reports/phase_1_resale_model/10_my_estimate.json'` to save a local JSON result. These optional personal estimates are ignored by Git.
 

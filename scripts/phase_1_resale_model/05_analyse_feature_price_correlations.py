@@ -12,7 +12,7 @@ import json
 import math
 import statistics
 import sys
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -70,17 +70,18 @@ def eta_squared(groups: list[str], target: list[float]) -> float | None:
     return between_ss / total_ss
 
 
-def within_group_pearson(feature: list[float], target: list[float], groups: list[str]) -> float | None:
-    feature_sums: dict[str, list[float]] = defaultdict(list)
-    target_sums: dict[str, list[float]] = defaultdict(list)
-    for group, x, y in zip(groups, feature, target):
-        feature_sums[group].append(x)
-        target_sums[group].append(y)
-    residual_x, residual_y = [], []
-    for group, x, y in zip(groups, feature, target):
-        residual_x.append(x - statistics.fmean(feature_sums[group]))
-        residual_y.append(y - statistics.fmean(target_sums[group]))
-    return pearson(residual_x, residual_y)
+def within_group_pearson(
+    feature: list[float],
+    target_residuals: list[float],
+    groups: list[str],
+) -> float | None:
+    feature_totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for group, x in zip(groups, feature):
+        feature_totals[group][0] += x
+        feature_totals[group][1] += 1
+    feature_means = {group: total / count for group, (total, count) in feature_totals.items()}
+    residual_x = [x - feature_means[group] for group, x in zip(groups, feature)]
+    return pearson(residual_x, target_residuals)
 
 
 def time_number(value: date | datetime) -> float:
@@ -155,27 +156,40 @@ def analyse(project_root: Path) -> tuple[list[dict], dict]:
     with duckdb.connect(str(database), read_only=True) as connection:
         description = connection.execute("DESCRIBE transaction_features").fetchall()
         columns = [row[0] for row in description]
+        data_types = {row[0]: row[1] for row in description}
         if TARGET not in columns or "dataset_split" not in columns or "flat_type" not in columns:
             raise ValueError("transaction_features is missing required target or split columns")
         query_columns = ", ".join('"' + column.replace('"', '""') + '"' for column in columns)
         cursor = connection.execute(f"SELECT {query_columns} FROM transaction_features WHERE dataset_split = 'train'")
-        records = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        fetched_rows = cursor.fetchall()
 
-    if len(records) < 2:
+    if len(fetched_rows) < 2:
         raise ValueError("Fewer than two training records are available")
-    prices = [float(record[TARGET]) for record in records]
-    flat_types = [str(record["flat_type"]) for record in records]
+    # Keep compact column tuples instead of one dictionary per transaction.
+    column_values = list(zip(*fetched_rows))
+    training_rows = len(fetched_rows)
+    del fetched_rows
+    print(
+        f"Analysing {training_rows:,} training transactions across {len(columns):,} columns.",
+        flush=True,
+    )
+    target_index = columns.index(TARGET)
+    flat_type_index = columns.index("flat_type")
+    prices = [float(value) for value in column_values[target_index]]
+    flat_types = [str(value) for value in column_values[flat_type_index]]
+    # Reuse price ranks and within-flat-type price residuals for repeated missing-row patterns.
+    target_stats_by_mask: OrderedDict[bytes, tuple[list[float], list[float]]] = OrderedDict()
     rows: list[dict] = []
-    for name in columns:
-        values = [record[name] for record in records]
+    for column_index, name in enumerate(columns, start=1):
+        values = column_values[column_index - 1]
         non_missing = [value for value in values if value is not None]
         distinct = len(set(non_missing))
-        kind, note = field_roles(name, distinct, len(records))
+        kind, note = field_roles(name, distinct, training_rows)
         result = {
             "column": name,
-            "data_type": next(row[1] for row in description if row[0] == name),
-            "rows": len(records),
-            "missing_rows": len(records) - len(non_missing),
+            "data_type": data_types[name],
+            "rows": training_rows,
+            "missing_rows": training_rows - len(non_missing),
             "distinct_values": distinct,
             "association_method": "excluded",
             "pearson_r": None,
@@ -189,7 +203,7 @@ def analyse(project_root: Path) -> tuple[list[dict], dict]:
         if name == TARGET:
             result["interpretation"] = "Prediction target; self-correlation is not meaningful and this column must be excluded from model inputs."
         elif kind == "identifier":
-            result["interpretation"] = note + (f" It has {distinct:,} distinct values in {len(records):,} training rows." if name == "block_id" else "")
+            result["interpretation"] = note + (f" It has {distinct:,} distinct values in {training_rows:,} training rows." if name == "block_id" else "")
         elif kind == "evaluation metadata":
             result["interpretation"] = note
         elif distinct <= 1:
@@ -221,11 +235,36 @@ def analyse(project_root: Path) -> tuple[list[dict], dict]:
                 numeric = [float(value) if value is not None else float("nan") for value in values]
             else:
                 numeric = [float(value) if value is not None else float("nan") for value in values]
-            valid = [(x, y, group) for x, y, group in zip(numeric, prices, flat_types) if math.isfinite(x) and math.isfinite(y)]
-            xs, ys, groups = ([item[index] for item in valid] for index in range(3))
+            valid_indexes = [
+                index
+                for index, value in enumerate(numeric)
+                if math.isfinite(value) and math.isfinite(prices[index])
+            ]
+            xs = [numeric[index] for index in valid_indexes]
+            ys = [prices[index] for index in valid_indexes]
+            groups = [flat_types[index] for index in valid_indexes]
+            mask = bytearray(len(numeric))
+            for index in valid_indexes:
+                mask[index] = 1
+            mask_key = bytes(mask)
+            target_stats = target_stats_by_mask.get(mask_key)
+            if target_stats is None:
+                target_rank = average_ranks(ys) if len(ys) > 1 else []
+                grouped_totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+                for group, price in zip(groups, ys):
+                    grouped_totals[group][0] += price
+                    grouped_totals[group][1] += 1
+                group_means = {group: total / count for group, (total, count) in grouped_totals.items()}
+                target_residuals = [price - group_means[group] for group, price in zip(groups, ys)]
+                target_stats = (target_rank, target_residuals)
+                target_stats_by_mask[mask_key] = target_stats
+                if len(target_stats_by_mask) > 4:
+                    target_stats_by_mask.popitem(last=False)
+            else:
+                target_stats_by_mask.move_to_end(mask_key)
             r = pearson(xs, ys)
-            rho = pearson(average_ranks(xs), average_ranks(ys)) if len(xs) > 1 else None
-            within = within_group_pearson(xs, ys, groups)
+            rho = pearson(average_ranks(xs), target_stats[0]) if len(xs) > 1 else None
+            within = within_group_pearson(xs, target_stats[1], groups)
             result["association_method"] = "Pearson r and Spearman rho" + (" (binary point-biserial)" if all(value in (0.0, 1.0) for value in set(xs)) else "")
             result["pearson_r"] = round(r, 6) if r is not None else None
             result["spearman_rho"] = round(rho, 6) if rho is not None else None
@@ -238,6 +277,8 @@ def analyse(project_root: Path) -> tuple[list[dict], dict]:
             else:
                 result["interpretation"] = note + (f" Within-flat-type r={within:+.3f} helps distinguish a pooled relationship from differences between flat types." if within is not None else note)
         rows.append(result)
+        if column_index % 10 == 0 or column_index == len(columns):
+            print(f"Feature analysis progress: {column_index:,}/{len(columns):,} columns.", flush=True)
 
     # Sort by absolute univariate association for analysis columns, keeping excluded fields at the end.
     def sort_key(row: dict) -> tuple:
@@ -253,7 +294,7 @@ def analyse(project_root: Path) -> tuple[list[dict], dict]:
         "database": str(database),
         "table": "transaction_features",
         "analysis_population": "Training split only; validation and test prices are not used for feature screening.",
-        "training_rows": len(records),
+        "training_rows": training_rows,
         "target": TARGET,
         "columns_profiled": len(columns),
         "method_note": "Pearson measures linear numeric association; Spearman measures monotonic association; eta-squared measures unadjusted group mean association; within-flat-type Pearson demeans numeric values within flat type. None implies causation or independent predictive value.",

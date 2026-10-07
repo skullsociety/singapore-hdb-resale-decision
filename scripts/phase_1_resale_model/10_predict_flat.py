@@ -1,4 +1,4 @@
-"""Price one Singapore HDB flat with the current Ridge/comparable release."""
+"""Price one Singapore HDB flat with the currently released model."""
 
 from __future__ import annotations
 
@@ -139,15 +139,18 @@ def ridge_contributions(pipeline, vector: np.ndarray, feature_columns: list[str]
 def rank_comparables(target: dict, selected: list[dict], baseline, blocks: dict[str, tuple[str, str]]) -> list[dict]:
     ranked = []
     for sale in selected:
-        distance = baseline.distance_m(target, sale)
+        has_distance = baseline.has_coordinates(target) and baseline.has_coordinates(sale)
+        distance = baseline.distance_m(target, sale) if has_distance else None
         month_gap = month_number(target["transaction_month"]) - month_number(sale["transaction_month"])
         area_gap = abs(float(target["floor_area_sqm"]) - float(sale["floor_area_sqm"]))
         storey_gap = abs(float(target["storey_midpoint"]) - float(sale["storey_midpoint"]))
-        score = distance / 1000 + area_gap / 10 + storey_gap / 6 + month_gap / 24
-        ranked.append((score, sale, distance, month_gap))
-    ranked.sort(key=lambda item: (item[0], item[1]["transaction_id"]))
+        score = area_gap / 10 + storey_gap / 6 + month_gap / 24
+        if distance is not None:
+            score += distance / 1000
+        ranked.append((not has_distance, score, sale, distance, month_gap))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]["transaction_id"]))
     output = []
-    for rank, (_, sale, distance, month_gap) in enumerate(ranked[:10], 1):
+    for rank, (_, _, sale, distance, month_gap) in enumerate(ranked[:10], 1):
         block, street = blocks.get(sale["block_id"], ("Unknown", "Unknown"))
         output.append({"rank": rank, "transaction_id": sale["transaction_id"],
                        "block": block, "street": street,
@@ -156,7 +159,8 @@ def rank_comparables(target: dict, selected: list[dict], baseline, blocks: dict[
                        "flat_type": sale["flat_type"], "flat_model": sale["flat_model"],
                        "floor_area_sqm": sale["floor_area_sqm"],
                        "storey_midpoint": sale["storey_midpoint"],
-                       "distance_m": round(distance, 1), "months_before_valuation": month_gap})
+                       "distance_m": round(distance, 1) if distance is not None else None,
+                       "months_before_valuation": month_gap})
     return output
 
 
@@ -167,7 +171,10 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     builder = module(scripts / "03_build_duckdb.py", "database_builder_10")
     release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
     if release["status"] != "national_candidate":
-        raise ValueError("Current national model configuration is missing; run step 09")
+        raise ValueError("No approved model release is available; review the Step 09 release report")
+    required_release_fields = {"model_id", "model_artifact", "feature_columns", "residual_offsets_sgd"}
+    if not required_release_fields.issubset(release):
+        raise ValueError("Model release is outdated; rerun steps 06–09")
     month = parse_month(args.valuation_month)
     flat_type = normalise(args.flat_type)
     storey_range = normalise(args.storey_range)
@@ -216,17 +223,28 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
             **block,
         }
         # The project model expects the same names as the transaction feature table.
-        artifact = joblib.load(root / release["ridge_artifact"])
         flat_types = sorted({row[1] for row in train_info})
         names, vectors = trainer.feature_records([source], flat_types)
-        if names != artifact["feature_columns"]:
-            raise ValueError("Feature schema differs from the trained Ridge artifact; rerun step 06")
-        ridge_price, explanation = ridge_contributions(artifact["pipeline"], np.asarray(vectors, dtype=object), names)
+        if names != release.get("feature_columns"):
+            raise ValueError("Feature schema differs from the released model; rerun steps 06–09")
+        artifact_path = Path(release["model_artifact"])
+        if not artifact_path.is_absolute():
+            artifact_path = root / artifact_path
+        model_id = release["model_id"]
+        model_price = float(trainer.predict_with_artifact(
+            artifact_path, model_id, names, np.asarray(vectors, dtype=object),
+        )[0])
+        explanation = None
+        if model_id == "ML_RIDGE_RESALE_PRICE_V1":
+            artifact = joblib.load(artifact_path)
+            _, explanation = ridge_contributions(artifact["pipeline"], np.asarray(vectors, dtype=object), names)
         all_sales = baseline.load_records(connection)
         prior_sales = [row for row in all_sales if row["transaction_month"] < month
                        and row["town"] == block["town"] and row["flat_type"] == flat_type]
         block_names = {row[0]: (row[1], row[2]) for row in connection.execute("SELECT block_id, block, street FROM hdb_blocks").fetchall()}
-    candidates, tier = baseline.select_comparables(source, prior_sales)
+    comparable_history = baseline.ComparableHistory()
+    comparable_history.add(prior_sales)
+    candidates, tier = baseline.select_comparables(source, comparable_history)
     warnings = ["National candidate estimate; review town-level validation before relying on it.",
                 "Unit condition, renovation, exact floor, view, and seller circumstances are unavailable."]
     if inferred_model:
@@ -235,47 +253,46 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         warnings.append("Lease commencement year was inferred from earlier same-block sales; verify it for this unit.")
     if block["match_status"] != "exact":
         warnings.append(f"Block geocoding match is {block['match_status']}; verify the address and coordinates.")
+    if not baseline.has_coordinates(block):
+        warnings.append("This block has no coordinates; comparable distances are unavailable, so comparisons use flat and transaction details.")
     if month_number(month) - month_number(latest_sale_month) > 3:
         warnings.append("Latest available transaction is more than three months before this valuation month.")
     if flat_type == "2 ROOM":
-        warnings.append("Two-room flats had weaker blended-model backtest accuracy; review comparables closely.")
+        warnings.append("Two-room estimates should be reviewed alongside the available comparable sales.")
+    comparable_price = float(baseline.median_prediction(candidates)[0]) if candidates else None
     result = {
-        "status": "estimate" if len(candidates) >= 3 else "insufficient_comparable_evidence",
-        "model_id": release["model_id"], "valuation_month": month.isoformat(),
+        "status": "estimate", "model_id": model_id,
+        "model_name": release.get("model_name", model_id), "valuation_month": month.isoformat(),
         "source_latest_transaction_month": latest_sale_month.isoformat(),
         "subject": {"block": block["block"], "street": block["street"],
                     "flat_type": flat_type, "flat_model": flat_model,
                     "floor_area_sqm": args.floor_area_sqm, "storey_range": storey_range,
                     "remaining_lease_years_approx": round(lease_months / 12, 2),
                     "lease_commence_year": lease_year},
-        "ridge_estimate_sgd": round(ridge_price, 2),
-        "comparable_sales_estimate_sgd": None,
-        "weights": {"ridge": release["ridge_weight"], "comparable_sales": release["comparable_weight"]},
-        "price_estimate_sgd": None, "lower_estimate_sgd": None, "upper_estimate_sgd": None,
+        "model_estimate_sgd": round(model_price, 2),
+        "comparable_sales_estimate_sgd": round(comparable_price, 2) if comparable_price is not None else None,
+        "weights": {"selected_model": 1.0, "comparable_sales": 0.0},
+        "price_estimate_sgd": round(model_price, 2), "lower_estimate_sgd": None, "upper_estimate_sgd": None,
         "range_method": release["calibration_method"],
         "nominal_range_coverage_pct": None,
         "pilot_test_observed_range_coverage_pct": release["test_observed_coverage_pct"],
         "pilot_test_mae_sgd": release["test_mae_sgd"],
-        "confidence_label": "insufficient_comparable_evidence" if len(candidates) < 3 else None,
+        "confidence_label": "limited_comparable_evidence" if len(candidates) < 3 else None,
         "comparable_count": len(candidates), "comparable_tier": tier,
         "comparable_sales": rank_comparables(source, candidates, baseline, block_names),
-        "ridge_explanation": explanation,
+        "model_explanation": explanation,
         "warnings": warnings,
     }
     if len(candidates) < 3:
-        result["warnings"].append("Fewer than three earlier comparable sales were found; no blended price is issued.")
-        return result
-    comparable_price = float(baseline.median_prediction(candidates)[0])
-    point = round(release["ridge_weight"] * ridge_price + release["comparable_weight"] * comparable_price, 2)
+        result["warnings"].append("Fewer than three earlier comparable sales were found; the model estimate is available, but there is limited local sales evidence.")
     level = "97.5" if len(candidates) < 5 else "95"
     low_offset, high_offset = release["residual_offsets_sgd"][level]
-    low = round(max(1.0, min(point, point + low_offset)), 2)
-    high = round(max(point, point + high_offset), 2)
+    low = round(max(1.0, min(model_price, model_price + low_offset)), 2)
+    high = round(max(model_price, model_price + high_offset), 2)
     result.update({
-        "comparable_sales_estimate_sgd": round(comparable_price, 2),
-        "price_estimate_sgd": point, "lower_estimate_sgd": low, "upper_estimate_sgd": high,
+        "price_estimate_sgd": round(model_price, 2), "lower_estimate_sgd": low, "upper_estimate_sgd": high,
         "nominal_range_coverage_pct": float(level),
-        "confidence_label": "low_wide_range" if len(candidates) < 5 else "moderate" if len(candidates) < 20 else "supported_by_comparables",
+        "confidence_label": "limited_comparable_evidence" if len(candidates) < 3 else "low_wide_range" if len(candidates) < 5 else "moderate" if len(candidates) < 20 else "supported_by_comparables",
     })
     if len(candidates) < 5:
         result["warnings"].append("Fewer than five comparables were found; a wider range is used.")

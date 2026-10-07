@@ -240,47 +240,59 @@ def score_search_result(result: dict[str, Any], block: str, street: str) -> tupl
 
 
 def geocode_block(client: OneMapClient, block: str, street: str) -> dict[str, Any]:
-    query = f"{block} {street} SINGAPORE"
-    response = client.search_address(query)
-    results = response.get("results", [])
-    if not isinstance(results, list) or not results:
+    search_streets = [street]
+    if normalize_text(block) == "1" and normalize_text(street) == "EVERTON PK":
+        search_streets.append("EVERTON PARK")
+
+    last_query = ""
+    for search_street in search_streets:
+        query = f"{block} {search_street} SINGAPORE"
+        last_query = query
+        response = client.search_address(query)
+        results = response.get("results", [])
+        if not isinstance(results, list) or not results:
+            continue
+
+        ranked = sorted(
+            (
+                (score_search_result(result, block, search_street), result)
+                for result in results
+                if isinstance(result, dict)
+            ),
+            key=lambda item: item[0][0],
+            reverse=True,
+        )
+        if not ranked:
+            continue
+        (score, status), chosen = ranked[0]
+        has_coordinates = bool(
+            str(chosen.get("LATITUDE", "")).strip()
+            and str(chosen.get("LONGITUDE", "")).strip()
+        )
+        if not has_coordinates and search_street != search_streets[-1]:
+            continue
+        if score < 100 and search_street != search_streets[-1]:
+            continue
         return {
             "block": block,
             "street": street,
             "query": query,
-            "match_status": "not_found",
-            "matched_address": "",
-            "postal_code": "",
-            "latitude": "",
-            "longitude": "",
+            "match_status": status if score >= 100 else "heuristic",
+            "matched_address": str(chosen.get("ADDRESS", "")),
+            "postal_code": str(chosen.get("POSTAL", "")),
+            "latitude": str(chosen.get("LATITUDE", "")),
+            "longitude": str(chosen.get("LONGITUDE", "")),
         }
 
-    ranked = sorted(
-        ((score_search_result(result, block, street), result) for result in results if isinstance(result, dict)),
-        key=lambda item: item[0][0],
-        reverse=True,
-    )
-    if not ranked:
-        return {
-            "block": block,
-            "street": street,
-            "query": query,
-            "match_status": "not_found",
-            "matched_address": "",
-            "postal_code": "",
-            "latitude": "",
-            "longitude": "",
-        }
-    (score, status), chosen = ranked[0]
     return {
         "block": block,
         "street": street,
-        "query": query,
-        "match_status": status if score >= 100 else "heuristic",
-        "matched_address": str(chosen.get("ADDRESS", "")),
-        "postal_code": str(chosen.get("POSTAL", "")),
-        "latitude": str(chosen.get("LATITUDE", "")),
-        "longitude": str(chosen.get("LONGITUDE", "")),
+        "query": last_query,
+        "match_status": "not_found",
+        "matched_address": "",
+        "postal_code": "",
+        "latitude": "",
+        "longitude": "",
     }
 
 
@@ -993,7 +1005,19 @@ def extract_block_coordinates(
 
     blocks = read_blocks(source_path)
     cache = load_cache(cache_path)
-    missing = [block for block in blocks if address_key(block["block"], block["street"]) not in cache]
+    everton_key = address_key("1", "EVERTON PK")
+    missing = [
+        block for block in blocks
+        if address_key(block["block"], block["street"]) not in cache
+        or (
+            address_key(block["block"], block["street"]) == everton_key
+            and (
+                cache[everton_key].get("match_status") == "not_found"
+                or not cache[everton_key].get("latitude")
+                or not cache[everton_key].get("longitude")
+            )
+        )
+    ]
     cache_lock = threading.Lock()
 
     def lookup(block: dict[str, str]) -> dict[str, Any]:

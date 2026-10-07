@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import heapq
 import importlib.util
 import json
 import math
@@ -56,6 +57,10 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def finite_quantile(values: list[float], probability: float) -> float:
     """Finite-sample order statistic used for split-conformal residual bounds."""
     ordered = sorted(float(value) for value in values)
+    return quantile_from_sorted(ordered, probability)
+
+
+def quantile_from_sorted(ordered: list[float], probability: float) -> float:
     if not ordered:
         raise ValueError("Cannot calibrate an interval without residuals.")
     rank = math.ceil((len(ordered) + 1) * probability) - 1
@@ -63,8 +68,21 @@ def finite_quantile(values: list[float], probability: float) -> float:
 
 
 def residual_bounds(values: list[float], coverage: float) -> tuple[float, float]:
-    tail = (1 - coverage) / 2
-    return finite_quantile(values, tail), finite_quantile(values, 1 - tail)
+    return residual_bounds_for_coverages(values, (coverage,))[coverage]
+
+
+def residual_bounds_for_coverages(
+    values: list[float], coverages: tuple[float, ...],
+) -> dict[float, tuple[float, float]]:
+    ordered = sorted(float(value) for value in values)
+    bounds = {}
+    for coverage in coverages:
+        tail = (1 - coverage) / 2
+        bounds[coverage] = (
+            quantile_from_sorted(ordered, tail),
+            quantile_from_sorted(ordered, 1 - tail),
+        )
+    return bounds
 
 
 def calculate_metrics(records: list[dict], ranges: dict[str, dict] | None = None) -> dict:
@@ -180,19 +198,22 @@ def compare_validation_calibrators(
         residual = float(row["resale_price"]) - float(predictions_by_id[row["transaction_id"]]["predicted_price"])
         residuals_by_group[(str(row["town"]), str(row["flat_type"]))].append(residual)
 
+    # Assessment sales reuse the same calibration groups and coverage levels.
+    coverages = (.90, .95)
+    global_bounds = residual_bounds_for_coverages(global_residuals, coverages)
+    group_bounds = {
+        group: residual_bounds_for_coverages(residuals, coverages)
+        for group, residuals in residuals_by_group.items()
+        if len(residuals) >= min_group_rows
+    }
     results = []
     for method in ("global", "town_flat_type"):
-        for nominal in (.90, .95):
+        for nominal in coverages:
             covered, widths = [], []
             for row in assessment:
-                group = residuals_by_group.get((str(row["town"]), str(row["flat_type"])), [])
-                if method == "town_flat_type" and len(group) >= min_group_rows:
-                    residuals = group
-                    scope = "town_flat_type"
-                else:
-                    residuals = global_residuals
-                    scope = "global_fallback"
-                low, high = residual_bounds(residuals, nominal)
+                group = (str(row["town"]), str(row["flat_type"]))
+                bounds = group_bounds.get(group) if method == "town_flat_type" else None
+                low, high = (bounds or global_bounds)[nominal]
                 point = float(predictions_by_id[row["transaction_id"]]["predicted_price"])
                 lower, upper = point + low, point + high
                 covered.append(lower <= float(row["resale_price"]) <= upper)
@@ -216,6 +237,7 @@ def comparable_evidence(project_root: Path, target_ids: set[str]) -> tuple[list[
     baseline = load_module("baseline_builder", project_root / "scripts/phase_1_resale_model" / "04_build_baselines.py")
     db = project_root / "data" / "property.duckdb"
     by_month: dict[date, list[dict]] = defaultdict(list)
+    print("Diagnostics: loading comparable-sale history...", flush=True)
     with duckdb.connect(str(db), read_only=True) as connection:
         records = baseline.load_records(connection)
     for row in records:
@@ -223,24 +245,39 @@ def comparable_evidence(project_root: Path, target_ids: set[str]) -> tuple[list[
 
     evidence = []
     summary: dict[str, tuple[str, int]] = {}
-    history = []
+    history = baseline.ComparableHistory()
+    processed = 0
+    progress_interval = max(1, len(target_ids) // 10)
     for month in sorted(by_month):
         month_records = by_month[month]
         for target in month_records:
             if target["transaction_id"] not in target_ids:
                 continue
+            processed += 1
             candidates, tier = baseline.select_comparables(target, history)
-            ranked = []
-            for source in candidates:
-                distance = baseline.distance_m(target, source)
-                month_gap = (target["transaction_month"].year - source["transaction_month"].year) * 12 + target["transaction_month"].month - source["transaction_month"].month
-                area_gap = abs(float(target["floor_area_sqm"]) - float(source["floor_area_sqm"]))
-                storey_gap = abs(float(target["storey_midpoint"]) - float(source["storey_midpoint"]))
-                score = distance / 1000 + area_gap / 10 + storey_gap / 6 + max(0, month_gap) / 24
-                ranked.append((score, source, distance, area_gap, storey_gap, month_gap))
-            ranked.sort(key=lambda item: (item[0], item[1]["transaction_id"]))
+            target_has_coordinates = baseline.has_coordinates(target)
+            target_month = target["transaction_month"]
+            target_area = float(target["floor_area_sqm"])
+            target_storey = float(target["storey_midpoint"])
+
+            def rank_candidate(source: dict) -> tuple:
+                has_distance = target_has_coordinates and baseline.has_coordinates(source)
+                distance = baseline.distance_m(target, source) if has_distance else None
+                source_month = source["transaction_month"]
+                month_gap = (target_month.year - source_month.year) * 12 + target_month.month - source_month.month
+                area_gap = abs(target_area - float(source["floor_area_sqm"]))
+                storey_gap = abs(target_storey - float(source["storey_midpoint"]))
+                score = (area_gap / 10 + storey_gap / 6 + max(0, month_gap) / 24)
+                if distance is not None:
+                    score += distance / 1000
+                return (not has_distance, score, source, distance, area_gap, storey_gap, month_gap)
+
+            ranked = heapq.nsmallest(
+                10, (rank_candidate(source) for source in candidates),
+                key=lambda item: (item[0], item[1], item[2]["transaction_id"]),
+            )
             summary[target["transaction_id"]] = (tier, len(candidates))
-            for rank, (_, source, distance, area_gap, storey_gap, month_gap) in enumerate(ranked[:10], start=1):
+            for rank, (_, _, source, distance, area_gap, storey_gap, month_gap) in enumerate(ranked, start=1):
                 evidence.append({
                     "subject_transaction_id": target["transaction_id"],
                     "comparable_rank": rank, "comparable_transaction_id": source["transaction_id"],
@@ -250,12 +287,15 @@ def comparable_evidence(project_root: Path, target_ids: set[str]) -> tuple[list[
                     "flat_model": source["flat_model"],
                     "floor_area_sqm": source["floor_area_sqm"],
                     "storey_midpoint": source["storey_midpoint"],
-                    "distance_m": round(distance, 1), "area_difference_sqm": round(area_gap, 1),
+                    "distance_m": round(distance, 1) if distance is not None else None,
+                    "area_difference_sqm": round(area_gap, 1),
                     "storey_difference": round(storey_gap, 1), "months_before_subject": month_gap,
                 })
+            if processed % progress_interval == 0 or processed == len(target_ids):
+                print(f"Diagnostics comparable evidence: {processed:,}/{len(target_ids):,} test sales.", flush=True)
         # Match the baseline builder: transactions from a month become usable only
         # after that month is scored, so same-month sales cannot support each other.
-        history.extend(month_records)
+        history.add(month_records)
     return evidence, summary
 
 
@@ -264,10 +304,29 @@ def explain_ridge(
     ranges: dict[str, dict], comp_summary: dict[str, tuple[str, int]],
 ) -> list[dict]:
     if selected_model_id != "ML_RIDGE_RESALE_PRICE_V1":
-        raise ValueError(
-            f"Local coefficient explanations currently require the selected Ridge model; got {selected_model_id}. "
-            "Do not substitute global tree importance for a per-estimate explanation."
-        )
+        # A tree model's global feature importance is not a reliable explanation
+        # for an individual estimate. Keep diagnostics running without claiming one.
+        prediction_lookup = {row["transaction_id"]: row for row in model_rows}
+        output = []
+        for row in (item for item in rows if item["dataset_split"] == "test"):
+            prediction = prediction_lookup[row["transaction_id"]]
+            tier, comp_count = comp_summary.get(row["transaction_id"], ("missing", 0))
+            range_row = ranges[row["transaction_id"]]
+            output.append({
+                "transaction_id": row["transaction_id"], "dataset_split": "test",
+                "model_id": selected_model_id, "model_version": "v1",
+                "prediction_method": "per_estimate_explanation_unavailable",
+                "point_estimate": round(float(prediction["predicted_price"]), 2),
+                "lower_estimate": range_row["lower_estimate"], "upper_estimate": range_row["upper_estimate"],
+                "nominal_interval_coverage_pct": range_row["nominal_coverage_pct"],
+                "confidence_label": range_row["confidence_label"],
+                "comparable_count": comp_count, "comparable_tier": tier,
+                "ridge_intercept": None, "top_positive_contributions_json": "[]",
+                "top_negative_contributions_json": "[]", "reconstructed_estimate": None,
+                "actual_price_for_backtest_only": float(row["resale_price"]),
+                "explanation_note": "This selected nonlinear model does not currently provide a reliable per-estimate explanation.",
+            })
+        return output
     selection = json.loads((project_root / "reports/phase_1_resale_model" / "06_model_selection.json").read_text(encoding="utf-8"))
     artifact_path = Path(selection["artifacts"][selected_model_id])
     artifact = joblib.load(artifact_path)
@@ -323,6 +382,7 @@ def explain_ridge(
 
 def run(project_root: Path) -> dict:
     db_path = project_root / "data" / "property.duckdb"
+    print("Diagnostics: loading transactions and saved predictions...", flush=True)
     trainer = load_module("resale_trainer", project_root / "scripts/phase_1_resale_model" / "06_train_resale_models.py")
     rows = trainer.read_transactions(db_path)
     rows_by_id = {row["transaction_id"]: row for row in rows}
@@ -336,6 +396,10 @@ def run(project_root: Path) -> dict:
     selected_rows = [row for row in model_predictions if row["model_id"] == model_id and row["dataset_split"] in {"validation", "test"}]
     if len(selected_rows) != len(validation_rows) + len(test_rows):
         raise ValueError("Selected model prediction rows do not match the validation/test transaction counts.")
+    print(
+        f"Diagnostics: loaded {len(validation_rows):,} validation and {len(test_rows):,} test sales; "
+        "calculating reusable range boundaries...", flush=True,
+    )
     predictions_by_id = {row["transaction_id"]: row for row in selected_rows}
     test_ids = {row["transaction_id"] for row in test_rows}
 
@@ -356,6 +420,7 @@ def run(project_root: Path) -> dict:
     calibration_method_check = compare_validation_calibrators(
         validation_rows, predictions_by_id, model_id,
     )
+    print("Diagnostics: validation range check complete; building test-sale ranges...", flush=True)
 
     baseline_by_id = {
         row["transaction_id"]: row for row in baseline_predictions
@@ -365,16 +430,18 @@ def run(project_root: Path) -> dict:
         transaction_id: int(row.get("comparable_count") or 0)
         for transaction_id, row in baseline_by_id.items()
     }
+    bounds_by_coverage = residual_bounds_for_coverages(global_residuals, (.95, .975))
     ranges = {}
     range_rows = []
-    for row in test_rows:
+    progress_interval = max(1, len(test_rows) // 10)
+    for processed, row in enumerate(test_rows, start=1):
         transaction_id = row["transaction_id"]
         prediction = predictions_by_id[transaction_id]
         key = (str(row["town"]), str(row["flat_type"]))
         calibrator_residuals, calibration_scope = global_residuals, "global"
         comparable_count = comparable_counts.get(transaction_id, 0)
         nominal_coverage = .975 if comparable_count < 5 else .95
-        lower_offset, upper_offset = residual_bounds(calibrator_residuals, nominal_coverage)
+        lower_offset, upper_offset = bounds_by_coverage[nominal_coverage]
         point = float(prediction["predicted_price"])
         lower = max(1.0, point + lower_offset)
         upper = max(lower, point + upper_offset)
@@ -398,14 +465,18 @@ def run(project_root: Path) -> dict:
         }
         ranges[transaction_id] = result
         range_rows.append(result)
+        if processed % progress_interval == 0 or processed == len(test_rows):
+            print(f"Diagnostics price ranges: {processed:,}/{len(test_rows):,} test sales.", flush=True)
 
     selected_test = [predictions_by_id[row["transaction_id"]] for row in test_rows]
     selected_validation = [predictions_by_id[row["transaction_id"]] for row in validation_rows]
     all_error_predictions = selected_test + [
         row for row in baseline_predictions if row["dataset_split"] == "test"
     ]
+    print("Diagnostics: checking errors across towns and flat types...", flush=True)
     reliability = reliability_report(all_error_predictions, rows_by_id, train_rows, ranges, model_id)
 
+    print("Diagnostics: checking comparable sales and estimate explanations...", flush=True)
     evidence_rows, comp_summary = comparable_evidence(project_root, test_ids)
     explanations = explain_ridge(project_root, model_id, rows, selected_test, ranges, comp_summary)
     explain_by_id = {row["transaction_id"]: row for row in explanations}
@@ -437,8 +508,8 @@ def run(project_root: Path) -> dict:
         },
         {
             "criterion": "Trace every estimate to its model version and source transactions",
-            "status": "pass" if len(explanations) == len(test_rows) and len(comp_summary) == len(test_rows) else "fail",
-            "evidence": f"{len(explanations)} of {len(test_rows)} test estimates have model explanations; {len(evidence_rows)} ranked comparable-sales evidence rows are linked by transaction ID.",
+            "status": "pass" if model_id == "ML_RIDGE_RESALE_PRICE_V1" and len(explanations) == len(test_rows) and len(comp_summary) == len(test_rows) else "review" if len(comp_summary) == len(test_rows) else "fail",
+            "evidence": f"{len(explanations)} test estimates are traceable; {len(evidence_rows)} ranked comparable-sales evidence rows are linked by transaction ID. Per-estimate coefficient explanations are available for Ridge only.",
         },
         {
             "criterion": "Low-data cases widen the range or report insufficient evidence",
@@ -486,6 +557,7 @@ def run(project_root: Path) -> dict:
         "calibration_check": reports / "07_calibration_method_check.csv",
         "exit_review": reports / "07_phase1_exit_review.json",
     }
+    print("Diagnostics: writing reports and database tables...", flush=True)
     write_csv(output_paths["reliability"], reliability)
     write_csv(output_paths["ranges"], range_rows)
     write_csv(output_paths["explanations"], explanations)
@@ -528,7 +600,7 @@ def run(project_root: Path) -> dict:
         "test_mae": test_model_metrics["mae"],
         "test_interval_coverage_pct": round(observed_coverage, 2),
         "mean_nominal_interval_coverage_pct": round(mean_nominal, 2),
-        "test_estimates_explained": len(explanations),
+        "test_estimates_explained": sum(row["prediction_method"] == "ridge_linear_contributions" for row in explanations),
         "comparable_evidence_rows": len(evidence_rows),
         "outputs": {key: str(value) for key, value in output_paths.items()},
         "criteria": criteria,

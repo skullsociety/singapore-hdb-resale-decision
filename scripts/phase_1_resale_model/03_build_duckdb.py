@@ -200,19 +200,46 @@ def build(project_root: Path) -> dict:
     source_counts = {name: len(rows) for name, rows in source_rows.items()}
     run_id = stable_id("BUILD", *[checksums[name] for name in sorted(checksums)])
     now = datetime.now(timezone.utc).isoformat()
+    data_quality_issues: list[dict[str, object]] = []
 
     block_rows, block_ids, block_coords, seen_block_keys = [], {}, {}, set()
-    for row in source_rows["blocks"]:
+    blocks_without_coordinates = 0
+    for row_number, row in enumerate(source_rows["blocks"], start=2):
         key = block_key(row["block"], row["street"])
         if key in seen_block_keys:
-            raise ValueError(f"Duplicate HDB block key: {key}")
-        seen_block_keys.add(key)
-        point = coordinate(row)
-        if point is None:
+            data_quality_issues.append({
+                "source": "hdb_blocks_with_coordinates.csv",
+                "row_number": row_number,
+                "block_key": key,
+                "reason": "Duplicate block address; duplicate row was not used.",
+            })
             continue
+        seen_block_keys.add(key)
+        coordinate_error = ""
+        try:
+            point = coordinate(row)
+        except ValueError as error:
+            point = None
+            coordinate_error = str(error)
         identifier = stable_id("BLOCK", key)
-        block_ids[key], block_coords[identifier] = identifier, point
-        block_rows.append((identifier, row["block"], row["street"], row["query"], row["match_status"], row["matched_address"], row["postal_code"], *point, row["retrieved_at_utc"]))
+        block_ids[key] = identifier
+        if point is None:
+            blocks_without_coordinates += 1
+            latitude, longitude = None, None
+            reason = coordinate_error or (
+                f"No coordinates returned by OneMap (match status: {row['match_status']}); "
+                "block retained with blank location features."
+            )
+            data_quality_issues.append({
+                "source": "hdb_blocks_with_coordinates.csv",
+                "row_number": row_number,
+                "block_key": key,
+                "reason": reason,
+            })
+        else:
+            block_coords[identifier] = point
+            latitude, longitude = point
+        block_rows.append((identifier, row["block"], row["street"], row["query"], row["match_status"], row["matched_address"], row["postal_code"], latitude, longitude, row["retrieved_at_utc"]))
 
     property_rows, property_ids = [], set()
     count_columns = (
@@ -221,33 +248,87 @@ def build(project_root: Path) -> dict:
         "3room_rental", "other_room_rental",
     )
     flag_columns = ("residential", "commercial", "market_hawker", "miscellaneous", "multistorey_carpark", "precinct_pavilion")
-    for row in source_rows["properties"]:
+    for row_number, row in enumerate(source_rows["properties"], start=2):
         key = block_key(row["blk_no"], row["street"])
         if key not in block_ids:
-            raise ValueError(f"HDB property cannot join to a located block: {key}")
+            data_quality_issues.append({
+                "source": "hdb_property_information.csv",
+                "row_number": row_number,
+                "block_key": key,
+                "reason": "No matching HDB block record; property row was not used.",
+            })
+            continue
         identifier = block_ids[key]
         if identifier in property_ids:
-            raise ValueError(f"Duplicate HDB property block: {key}")
-        property_ids.add(identifier)
+            data_quality_issues.append({
+                "source": "hdb_property_information.csv",
+                "row_number": row_number,
+                "block_key": key,
+                "reason": "Duplicate property block; duplicate row was not used.",
+            })
+            continue
         flags = tuple(row[field].strip().upper() == "Y" for field in flag_columns)
-        counts = tuple(int(row[field]) for field in count_columns)
-        property_rows.append((identifier, row["blk_no"], row["street"], int(row["max_floor_lvl"]), int(row["year_completed"]), *flags, row["bldg_contract_town"], int(row["total_dwelling_units"]), *counts))
+        try:
+            max_floor_lvl = int(row["max_floor_lvl"])
+            year_completed = int(row["year_completed"])
+            total_dwelling_units = int(row["total_dwelling_units"])
+            counts = tuple(int(row[field]) for field in count_columns)
+        except (TypeError, ValueError) as error:
+            data_quality_issues.append({
+                "source": "hdb_property_information.csv",
+                "row_number": row_number,
+                "block_key": key,
+                "reason": f"Invalid property numeric value; row was not used ({error}).",
+            })
+            continue
+        property_ids.add(identifier)
+        property_rows.append((identifier, row["blk_no"], row["street"], max_floor_lvl, year_completed, *flags, row["bldg_contract_town"], total_dwelling_units, *counts))
 
     transaction_rows, occurrence_counts = [], Counter()
     transaction_fields = tuple(source_rows["transactions"][0].keys())
-    for row in source_rows["transactions"]:
+    for row_number, row in enumerate(source_rows["transactions"], start=2):
         key = block_key(row["block"], row["street_name"])
         identifier = block_ids.get(key)
         if identifier is None or identifier not in property_ids:
-            raise ValueError(f"Transaction cannot join to block and property: {key}")
+            data_quality_issues.append({
+                "source": "hdb_resale_transactions.csv",
+                "row_number": row_number,
+                "transaction_month": row["month"],
+                "town": row["town"],
+                "block_key": key,
+                "reason": "No matching HDB block and property records; transaction was not used.",
+            })
+            continue
         source_tuple = tuple(row[field] for field in transaction_fields)
+        try:
+            price = float(row["resale_price"])
+            area = float(row["floor_area_sqm"])
+            storey_midpoint = parse_storey(row["storey_range"])
+            remaining_lease_months = parse_lease(row["remaining_lease"])
+            lease_commence_year = int(row["lease_commence_date"])
+        except (TypeError, ValueError) as error:
+            data_quality_issues.append({
+                "source": "hdb_resale_transactions.csv",
+                "row_number": row_number,
+                "transaction_month": row["month"],
+                "town": row["town"],
+                "block_key": key,
+                "reason": f"Invalid transaction value; row was not used ({error}).",
+            })
+            continue
+        if price <= 0 or area <= 0:
+            data_quality_issues.append({
+                "source": "hdb_resale_transactions.csv",
+                "row_number": row_number,
+                "transaction_month": row["month"],
+                "town": row["town"],
+                "block_key": key,
+                "reason": "Price or floor area is not positive; transaction was not used.",
+            })
+            continue
         occurrence_counts[source_tuple] += 1
         transaction_id = stable_id("TX", *source_tuple, occurrence_counts[source_tuple])
-        price = float(row["resale_price"])
-        area = float(row["floor_area_sqm"])
-        if price <= 0 or area <= 0:
-            raise ValueError(f"Nonpositive transaction price or area: {row}")
-        transaction_rows.append((transaction_id, identifier, f'{row["month"]}-01', row["town"], row["flat_type"], row["block"], row["street_name"], row["storey_range"], parse_storey(row["storey_range"]), area, row["flat_model"], int(row["lease_commence_date"]), row["remaining_lease"], parse_lease(row["remaining_lease"]), price))
+        transaction_rows.append((transaction_id, identifier, f'{row["month"]}-01', row["town"], row["flat_type"], row["block"], row["street_name"], row["storey_range"], storey_midpoint, area, row["flat_model"], lease_commence_year, row["remaining_lease"], remaining_lease_months, price))
 
     schools, school_locations = load_amenities(source_rows["schools"], "primary_schools")
     childcare, childcare_locations = load_amenities(source_rows["childcare"], "childcare_centres")
@@ -266,7 +347,11 @@ def build(project_root: Path) -> dict:
 
     feature_rows = []
     for identifier in sorted(property_ids):
-        lat, lon = block_coords[identifier]
+        point = block_coords.get(identifier)
+        if point is None:
+            feature_rows.append((identifier, *([None, None] * len(NEARBY_CATEGORIES))))
+            continue
+        lat, lon = point
         values = []
         for category in NEARBY_CATEGORIES:
             distances = [haversine_m(lat, lon, other_lat, other_lon) for other_lat, other_lon in locations[category]]
@@ -355,7 +440,7 @@ def build(project_root: Path) -> dict:
                 raise ValueError("Transaction feature join changed the number of transactions")
             if counts["block_location_features"] != counts["hdb_properties"]:
                 raise ValueError("Block location feature count does not match HDB properties")
-            null_check = con.execute("SELECT COUNT(*) FROM transaction_features WHERE transaction_id IS NULL OR block_id IS NULL OR resale_price IS NULL OR nearest_mrt_lrt_stations_m IS NULL").fetchone()[0]
+            null_check = con.execute("SELECT COUNT(*) FROM transaction_features WHERE transaction_id IS NULL OR block_id IS NULL OR resale_price IS NULL").fetchone()[0]
             if null_check:
                 raise ValueError(f"Model-ready table has {null_check} missing critical fields")
             duplicate_check = con.execute("SELECT COUNT(*) - COUNT(DISTINCT transaction_id) FROM transaction_features").fetchone()[0]
@@ -372,7 +457,23 @@ def build(project_root: Path) -> dict:
             raise ValueError("A source file changed during the database build; rerun after extraction finishes")
         os.replace(temporary_parquet, parquet)
         os.replace(temporary_database, database)
-        result = {"status": "success", "run_id": run_id, "built_at_utc": now, "source_rows": source_counts, "table_rows": counts, "dataset_split_rows": split_counts, "excluded": {"hdb_blocks_without_coordinates": len(source_rows["blocks"]) - len(block_rows), "healthcare_without_coordinates": len(source_rows["healthcare"]) - len(healthcare), "untrusted_or_missing_amenities": len(source_rows["amenities"]) - len(amenities)}, "database": str(database), "model_ready_parquet": str(parquet)}
+        result = {
+            "status": "success_with_data_issues" if data_quality_issues else "success",
+            "run_id": run_id,
+            "built_at_utc": now,
+            "source_rows": source_counts,
+            "table_rows": counts,
+            "dataset_split_rows": split_counts,
+            "quality": {"hdb_blocks_with_missing_coordinates": blocks_without_coordinates},
+            "data_quality_issue_count": len(data_quality_issues),
+            "data_quality_issues": data_quality_issues,
+            "excluded": {
+                "healthcare_without_coordinates": len(source_rows["healthcare"]) - len(healthcare),
+                "untrusted_or_missing_amenities": len(source_rows["amenities"]) - len(amenities),
+            },
+            "database": str(database),
+            "model_ready_parquet": str(parquet),
+        }
         report.write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
     finally:
