@@ -1,6 +1,6 @@
 """Train resale-price models, compare them with baselines, and select one.
 
-Models are fitted using training rows only. Validation MAE selects the winner;
+Models are fitted using training rows only. Recent validation MAE selects the winner;
 the test split is evaluated after selection and never drives that choice.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -89,6 +90,7 @@ OBSOLETE_MODEL_IDS = ("ML_RANDOM_FOREST_ABSOLUTE_ERROR_V1",)
 BASELINE_NAMES = {
     "BASELINE_RECENT_FLAT_TYPE_24M_V1": "recent_flat_type_median_24m",
     "BASELINE_COMPARABLE_SALES_V1": "comparable_sales_v1",
+    "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1": "comparable_sales_recency_weighted_v1",
 }
 PREDICTION_COLUMNS = [
     "prediction_id", "model_id", "transaction_id", "dataset_split", "prediction_type",
@@ -194,8 +196,56 @@ def feature_records(rows: list[dict], train_flat_types: list[str]) -> tuple[list
     return numeric_names + CAT_COLUMNS, output
 
 
+COMPARABLE_FEATURE = "comparable_price_sgd"
+
+
+def baseline_aware_features(rows: list[dict], train_flat_types: list[str]) -> tuple[list[str], list[list[object]]]:
+    """Add the earlier-sales estimate to the ordinary property features."""
+    names, vectors = feature_records(rows, train_flat_types)
+    insert_at = len(names) - len(CAT_COLUMNS)
+    for row, vector in zip(rows, vectors):
+        anchor = row.get(COMPARABLE_FEATURE)
+        vector.insert(insert_at, float(anchor) if anchor is not None else float("nan"))
+    names.insert(insert_at, COMPARABLE_FEATURE)
+    return names, vectors
+
+
+def historical_training_anchors(
+    project_root: Path, train: list[dict], comparable_model_id: str, *, progress: bool = False,
+) -> dict[str, float]:
+    """Use only earlier months, including for training transactions."""
+    path = project_root / "scripts/phase_1_resale_model/04_build_baselines.py"
+    spec = importlib.util.spec_from_file_location("training_baselines", path)
+    baseline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(baseline)
+    by_month = defaultdict(list)
+    for row in train:
+        by_month[as_date(row["transaction_month"])].append(row)
+    history = baseline.ComparableHistory()
+    anchors = {}
+    months = sorted(by_month)
+    processed = 0
+    for month_index, month in enumerate(months, start=1):
+        for row in by_month[month]:
+            candidates, _ = baseline.select_comparables(row, history)
+            if candidates:
+                anchors[row["transaction_id"]] = float(baseline.comparable_price_prediction(
+                    comparable_model_id, as_date(row["transaction_month"]), candidates,
+                )[0])
+        history.add(by_month[month])
+        processed += len(by_month[month])
+        if progress and (month_index % 12 == 0 or month_index == len(months)):
+            print(f"Comparable anchor progress: {processed:,}/{len(train):,} training sales.", flush=True)
+    return anchors
+
+
 def predict_with_artifact(artifact_path: Path, model_id: str, feature_columns: list[str], matrix: np.ndarray) -> np.ndarray:
     """Run the selected trained model using the artifact format saved in step 06."""
+    if COMPARABLE_FEATURE not in feature_columns:
+        raise ValueError("Model predates comparable-aware training; rerun Phase 1 steps 06–09")
+    anchor = np.asarray(matrix[:, feature_columns.index(COMPARABLE_FEATURE)], dtype=float)
+    if not np.isfinite(anchor).all() or (anchor <= 0).any():
+        raise ValueError("An earlier comparable-sales estimate is required for every prediction")
     if model_id.startswith("ML_CATBOOST"):
         if CatBoostRegressor is None:
             raise RuntimeError("CatBoost is required to load the released model; install project requirements and rerun step 06")
@@ -213,12 +263,15 @@ def predict_with_artifact(artifact_path: Path, model_id: str, feature_columns: l
         if artifact.get("feature_columns") != feature_columns:
             raise ValueError("Feature schema differs from the selected model artifact; rerun step 06")
         if "models" in artifact:
-            values = np.asarray(artifact["models"]["p50"].predict(matrix), dtype=float).reshape(-1)
+            values = np.sort(np.column_stack([
+                np.asarray(artifact["models"][label].predict(matrix), dtype=float).reshape(-1)
+                for label in ("p10", "p50", "p90")
+            ]), axis=1)[:, 1]
         else:
             values = np.asarray(artifact["pipeline"].predict(matrix), dtype=float).reshape(-1)
     if len(values) != len(matrix) or not np.isfinite(values).all():
         raise ValueError(f"Selected model {model_id} returned invalid predictions")
-    return np.maximum(values, 1.0)
+    return np.maximum(anchor + values, 1.0)
 
 
 def build_pipeline(model_kind: str, numeric_indices: list[int], categorical_indices: list[int]) -> Pipeline:
@@ -379,6 +432,48 @@ def read_baselines(path: Path) -> list[dict]:
     return rows
 
 
+def select_validation_model(model_predictions: list[dict], metric_rows: list[dict], artifacts: dict[str, str]) -> dict:
+    """Select on recent validation sales, where market drift matters most."""
+    validation = [row for row in model_predictions if row["dataset_split"] == "validation"]
+    months = sorted({as_date(row["valuation_month"]) for row in validation})
+    if len(months) < 2:
+        raise ValueError("At least two validation months are required for recent-period model selection")
+    recent_start = months[len(months) // 2]
+    recent = defaultdict(list)
+    recent_ids = defaultdict(set)
+    for row in validation:
+        if as_date(row["valuation_month"]) >= recent_start:
+            recent[row["model_id"]].append(abs(float(row["predicted_price"]) - float(row["actual_price"])))
+            recent_ids[row["model_id"]].add(row["transaction_id"])
+    overall = {
+        row["model_id"]: row for row in metric_rows
+        if row["dataset_split"] == "validation" and row["model_id"] in artifacts
+    }
+    if set(recent) != set(artifacts) or set(overall) != set(artifacts):
+        raise ValueError("Saved validation predictions or metrics do not cover every fitted model")
+    if len({frozenset(ids) for ids in recent_ids.values()}) != 1 or any(
+        len(recent[model_id]) != len(recent_ids[model_id]) for model_id in artifacts
+    ):
+        raise ValueError("Fitted models have different or duplicate recent-validation sales")
+    selected_id = min(artifacts, key=lambda model_id: (
+        statistics.mean(recent[model_id]), float(overall[model_id]["mae"]), model_id,
+    ))
+    selected = overall[selected_id]
+    recent_mae = statistics.mean(recent[selected_id])
+    return {
+        "model_id": selected_id, "model_name": selected["model_name"],
+        "validation_mae": float(selected["mae"]), "validation_rmse": float(selected["rmse"]),
+        "recent_validation_mae": round(recent_mae, 4),
+        "recent_validation_start_month": recent_start.isoformat(),
+        "selection_metric": "recent_validation_mae",
+        "artifact_path": artifacts[selected_id],
+        "selection_reason": (
+            "Lowest MAE in the latest half of validation months; overall validation MAE breaks ties. "
+            "Test data was not used by the selection rule."
+        ),
+    }
+
+
 def atomic_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -459,7 +554,7 @@ def upsert_database(
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )""", [tuple(row.values()) for row in quantile_rows])
             connection.execute("INSERT INTO selected_model VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
-                stable_id("SELECTED", selected_at), selection["model_id"], "validation_mae",
+                stable_id("SELECTED", selected_at), selection["model_id"], selection["selection_metric"],
                 selection["validation_mae"], selection["validation_rmse"], selected_at,
                 selection["artifact_path"], selection["selection_reason"],
             ])
@@ -467,6 +562,47 @@ def upsert_database(
         except Exception:
             connection.execute("ROLLBACK")
             raise
+
+
+def reselect_saved_models(project_root: Path) -> dict:
+    """Reapply the validation-only selection rule without fitting models again."""
+    report_path = project_root / "reports/phase_1_resale_model/06_model_selection.json"
+    prediction_path = project_root / "data/model_ready/06_ml_predictions.csv"
+    if not report_path.is_file() or not prediction_path.is_file():
+        raise ValueError("Saved Step 06 results are missing; run full model training first")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("target") != "residual_to_earlier_comparable_price":
+        raise ValueError("Saved models use an older target; run full model training first")
+    artifacts = report.get("artifacts", {})
+    if not artifacts or any(not Path(path).is_file() for path in artifacts.values()):
+        raise ValueError("A fitted model artifact is missing; run full model training first")
+    with prediction_path.open(encoding="utf-8-sig", newline="") as handle:
+        predictions = list(csv.DictReader(handle))
+    selection = select_validation_model(predictions, report["metrics"], artifacts)
+    report["selected_model"] = selection
+    report["selected_model_test_metrics"] = next(
+        row for row in report["metrics"]
+        if row["model_id"] == selection["model_id"] and row["dataset_split"] == "test"
+    )
+    report["selection_rule"] = "lowest MAE in latest half of validation months; overall validation MAE tie-breaker; test is report-only"
+    selected_at = datetime.now(timezone.utc).isoformat()
+    database = project_root / "data/property.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("BEGIN TRANSACTION")
+        try:
+            connection.execute("DELETE FROM selected_model")
+            connection.execute("INSERT INTO selected_model VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+                stable_id("SELECTED", selected_at), selection["model_id"], selection["selection_metric"],
+                selection["validation_mae"], selection["validation_rmse"], selected_at,
+                selection["artifact_path"], selection["selection_reason"],
+            ])
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Selected {selection['model_id']} from recent validation MAE, without retraining.", flush=True)
+    return report
 
 
 def run(project_root: Path, skip_catboost: bool = False) -> dict:
@@ -479,16 +615,44 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     if not train or not validation or not test:
         raise ValueError("Training, validation, and test splits are all required.")
     baseline_predictions = read_baselines(project_root / "data" / "model_ready" / "baseline_predictions.csv")
+    baseline_report_path = project_root / "reports/phase_1_resale_model/04_baseline_metrics.json"
+    baseline_report = json.loads(baseline_report_path.read_text(encoding="utf-8"))
+    comparable_model_id = baseline_report["selected_comparable_model_id"]
+    if comparable_model_id not in BASELINE_NAMES or comparable_model_id == "BASELINE_RECENT_FLAT_TYPE_24M_V1":
+        raise ValueError("Step 04 did not select a supported comparable-sales method")
     print(
         f"Loaded {len(rows):,} transactions: {len(train):,} train, "
         f"{len(validation):,} validation, {len(test):,} test.",
         flush=True,
     )
-    y_train = np.asarray([float(row["resale_price"]) for row in train], dtype=float)
-    y_validation = np.asarray([float(row["resale_price"]) for row in validation], dtype=float)
+    print("Calculating earlier-month comparable prices for training...", flush=True)
+    print(f"Using comparable price method: {comparable_model_id}", flush=True)
+    anchors = historical_training_anchors(project_root, train, comparable_model_id, progress=True)
+    baseline_anchors = {
+        row["transaction_id"]: row for row in baseline_predictions
+        if row["model_id"] == comparable_model_id
+    }
+    for split, split_transactions in (("validation", validation), ("test", test)):
+        if {row["transaction_id"] for row in split_transactions} != {
+            key for key, prediction in baseline_anchors.items() if prediction["dataset_split"] == split
+        }:
+            raise ValueError(f"Comparable baseline does not cover the {split} split exactly; rerun step 04")
+        for row in split_transactions:
+            saved = baseline_anchors[row["transaction_id"]]
+            if abs(saved["actual_price"] - float(row["resale_price"])) > .01 or saved["valuation_month"] != as_date(row["transaction_month"]):
+                raise ValueError("Comparable baseline is stale; rerun step 04")
+            anchors[row["transaction_id"]] = saved["predicted_price"]
+    for row in rows:
+        row[COMPARABLE_FEATURE] = anchors.get(row["transaction_id"])
+    eligible_train = [row for row in train if row[COMPARABLE_FEATURE] is not None]
+    if not eligible_train:
+        raise ValueError("No training transactions have earlier comparable sales")
+    print(f"Comparable anchors available for {len(eligible_train):,}/{len(train):,} training sales.", flush=True)
+    y_train = np.asarray([float(row["resale_price"]) - row[COMPARABLE_FEATURE] for row in eligible_train], dtype=float)
+    y_validation = np.asarray([float(row["resale_price"]) - row[COMPARABLE_FEATURE] for row in validation], dtype=float)
     flat_types = sorted({str(row["flat_type"]) for row in train})
     print("Building model features...", flush=True)
-    column_names, all_x = feature_records(rows, flat_types)
+    column_names, all_x = baseline_aware_features(rows, flat_types)
     matrix = np.asarray(all_x, dtype=object)
     print(f"Prepared {len(column_names):,} features for {len(rows):,} transactions.", flush=True)
     name_to_index = {name: index for index, name in enumerate(column_names)}
@@ -508,17 +672,18 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         if not (skip_catboost and model_id.startswith("ML_CATBOOST"))
     }
 
-    train_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "train"]
+    train_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "train" and row[COMPARABLE_FEATURE] is not None]
     validation_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "validation"]
     eval_indices = [index for index, row in enumerate(rows) if row["dataset_split"] in {"validation", "test"}]
     eval_matrix = matrix[eval_indices]
+    eval_anchors = np.asarray([rows[index][COMPARABLE_FEATURE] for index in eval_indices], dtype=float)
     total_models = len(active_model_specs)
     for model_index, (model_id, spec) in enumerate(active_model_specs.items(), start=1):
         is_catboost = model_id.startswith("ML_CATBOOST")
         is_quantile = "QUANTILE_P50" in model_id
         print(
             f"Model {model_index}/{total_models}: fitting {spec['name']} "
-            f"({len(train):,} training rows)...",
+            f"({len(eligible_train):,} training rows)...",
             flush=True,
         )
         if is_catboost:
@@ -554,10 +719,10 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
                 if raw_prediction.ndim != 2 or raw_prediction.shape[1] != 3:
                     raise ValueError(f"Expected three quantiles from CatBoost, got shape {raw_prediction.shape}")
                 sorted_quantiles = np.sort(raw_prediction, axis=1)
-                lower_values, all_values, upper_values = sorted_quantiles.T
+                lower_values, all_values, upper_values = sorted_quantiles.T + eval_anchors
                 bounds = (lower_values, upper_values)
             else:
-                all_values = raw_prediction.reshape(-1)
+                all_values = raw_prediction.reshape(-1) + eval_anchors
                 bounds = None
         elif is_quantile:
             quantile_models = {}
@@ -567,12 +732,16 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
                 quantile_model = build_pipeline(f"quantile_{alpha}", numeric_indices, categorical_indices)
                 quantile_model.fit(matrix[train_indices], y_train)
                 quantile_models[label] = quantile_model
-                quantile_values[label] = quantile_model.predict(eval_matrix)
+                quantile_values[label] = quantile_model.predict(eval_matrix) + eval_anchors
                 print(f"  Quantile {label}: fit and prediction complete.", flush=True)
-            all_values = quantile_values["p50"]
-            bounds = (quantile_values["p10"], quantile_values["p90"])
+            ordered_quantiles = np.sort(np.column_stack((
+                quantile_values["p10"], quantile_values["p50"], quantile_values["p90"],
+            )), axis=1)
+            bounds = (ordered_quantiles[:, 0], ordered_quantiles[:, 2])
+            all_values = ordered_quantiles[:, 1]
             artifact_path = artifact_dir / spec["artifact"]
-            joblib.dump({"models": quantile_models, "feature_columns": column_names, "model_id": model_id}, artifact_path)
+            joblib.dump({"models": quantile_models, "feature_columns": column_names, "model_id": model_id,
+                         "target": "residual_to_comparable"}, artifact_path)
         else:
             if model_id.startswith("ML_RIDGE"):
                 kind = "ridge"
@@ -582,10 +751,11 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
                 kind = "gradient_boosting"
             estimator = build_pipeline(kind, numeric_indices, categorical_indices)
             estimator.fit(matrix[train_indices], y_train)
-            all_values = estimator.predict(eval_matrix)
+            all_values = estimator.predict(eval_matrix) + eval_anchors
             bounds = None
             artifact_path = artifact_dir / spec["artifact"]
-            joblib.dump({"pipeline": estimator, "feature_columns": column_names, "model_id": model_id}, artifact_path)
+            joblib.dump({"pipeline": estimator, "feature_columns": column_names, "model_id": model_id,
+                         "target": "residual_to_comparable"}, artifact_path)
         artifacts[model_id] = str(artifact_path)
         print(f"Model {model_index}/{total_models}: fit complete; evaluating validation and test rows...", flush=True)
         pred_pos = 0
@@ -622,7 +792,7 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         ))
         print(f"Model {model_index}/{total_models}: predictions and artifact saved.", flush=True)
 
-    print("Comparing model results and selecting by validation MAE...", flush=True)
+    print("Comparing model results and selecting by recent validation MAE...", flush=True)
     all_predictions = baseline_predictions + model_predictions
     prediction_ids = {prediction["transaction_id"] for prediction in baseline_predictions}
     for split, expected_rows in split_rows.items():
@@ -642,22 +812,8 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         result = metrics(predictions)
         metric_rows.append({"model_id": model_id, "model_name": model_name[model_id], "dataset_split": split,
                             **{key: round(value, 4) if value is not None else None for key, value in result.items()}})
-    validation_ranking = sorted(
-        (row for row in metric_rows if row["dataset_split"] == "validation" and row["model_id"] in MODEL_SPECS),
-        key=lambda row: (row["mae"], row["rmse"]),
-    )
-    selected = validation_ranking[0]
-    selected_artifact = artifacts.get(selected["model_id"], "")
-    reason = (
-        f"Lowest validation MAE among the fitted machine-learning models; "
-        f"ranked using RMSE as a tie-breaker. Test data was not used for selection."
-    )
-    selection = {
-        "model_id": selected["model_id"], "model_name": selected["model_name"],
-        "validation_mae": selected["mae"], "validation_rmse": selected["rmse"],
-        "artifact_path": selected_artifact,
-        "selection_reason": reason,
-    }
+    selection = select_validation_model(model_predictions, metric_rows, artifacts)
+    selected_id = selection["model_id"]
     train_prices = [float(row["resale_price"]) for row in train]
     cut_points = tuple(float(np.quantile(train_prices, q)) for q in (0.25, 0.5, 0.75))
     error_rows = error_analysis(all_predictions, row_by_id, cut_points)
@@ -676,11 +832,13 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     atomic_csv(quantile_path, quantile_rows)
     summary = {
         "status": "success", "built_at_utc": built_at,
-        "target": "resale_price", "training_rows": len(train),
+        "target": "residual_to_earlier_comparable_price", "comparable_model_id": comparable_model_id,
+        "training_rows": len(eligible_train),
+        "training_rows_without_earlier_comparables": len(train) - len(eligible_train),
         "validation_rows": len(validation), "test_rows": len(test),
         "feature_count": len(column_names), "feature_columns": column_names,
         "metrics": metric_rows, "selected_model": selection,
-        "selected_model_test_metrics": next(row for row in metric_rows if row["model_id"] == selected["model_id"] and row["dataset_split"] == "test"),
+        "selected_model_test_metrics": next(row for row in metric_rows if row["model_id"] == selected_id and row["dataset_split"] == "test"),
         "baseline_comparison_included": True,
         "error_analysis_dimensions": ["flat_type", "actual_price_band", "transaction_year", "storey_range", "remaining_lease_band"],
         "artifacts": artifacts,
@@ -692,7 +850,7 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         "catboost_available": CatBoostRegressor is not None,
         "catboost_unavailable_reason": CATBOOST_IMPORT_ERROR,
         "catboost_skipped": bool(skip_catboost and CatBoostRegressor is not None),
-        "selection_rule": "lowest validation MAE across fitted machine-learning models; RMSE tie-breaker; test is report-only",
+        "selection_rule": "lowest MAE in latest half of validation months; overall validation MAE tie-breaker; test is report-only",
     }
     report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Training complete. Selected model: {selection['model_name']}.", flush=True)
@@ -703,13 +861,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--skip-catboost", action="store_true", help="Skip optional CatBoost fits for a quicker scikit-learn comparison.")
+    parser.add_argument("--reselect-only", action="store_true", help="Apply the current validation selection rule to saved Step 06 predictions without retraining.")
     args = parser.parse_args()
     try:
-        result = run(args.project_root.resolve(), skip_catboost=args.skip_catboost)
+        result = (reselect_saved_models(args.project_root.resolve()) if args.reselect_only
+                  else run(args.project_root.resolve(), skip_catboost=args.skip_catboost))
     except (ValueError, OSError, duckdb.Error, RuntimeError) as error:
         print(f"Resale model workflow failed: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2))
+    if args.reselect_only:
+        print(json.dumps({"selected_model": result["selected_model"],
+                          "selected_model_test_metrics": result["selected_model_test_metrics"]}, indent=2))
+    else:
+        print(json.dumps(result, indent=2))
     return 0
 
 

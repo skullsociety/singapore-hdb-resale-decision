@@ -23,7 +23,7 @@ async function advanceFromSavedPage(state, site, page) {
         });
         return;
       }
-      const destination = site.pageUrl(page + 1);
+      const destination = site.pageUrl(page + 1, state.searchUrl || site.startUrl);
       if (!destination || !site.matches(destination)) {
         await updateStatus(state.runId, {
           active: false, status: `Stopped: invalid next-page URL after page ${page}`

@@ -7,6 +7,8 @@ It creates two non-machine-learning baselines:
 * recent_flat_type_median_24m: the median recent price for the same town and flat type.
 * comparable_sales_v1: a hierarchy of recent, similar sales, starting with the
   same block and widening to nearby and town-wide comparables when needed.
+* comparable_sales_recency_weighted_v1: the same comparable groups, with more
+  influence given to recently completed sales.
 """
 
 from __future__ import annotations
@@ -40,8 +42,17 @@ MODEL_DEFINITIONS = {
         "name": "comparable_sales_v1",
         "description": "Median of earlier comparable sales selected through a documented local-to-town hierarchy.",
     },
+    "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1": {
+        "name": "comparable_sales_recency_weighted_v1",
+        "description": "Price median of the same earlier comparable sales, weighted by a six-month recency half-life.",
+    },
 }
 LOOKBACK_MONTHS = 24
+RECENCY_HALF_LIFE_MONTHS = 6
+COMPARABLE_MODEL_IDS = (
+    "BASELINE_COMPARABLE_SALES_V1",
+    "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1",
+)
 
 
 def month_number(value: date) -> int:
@@ -67,6 +78,54 @@ def percentile(values: list[float], percentile_value: float) -> float:
 def median_prediction(records: list[dict]) -> tuple[float, float, float]:
     prices = [record["resale_price"] for record in records]
     return statistics.median(prices), percentile(prices, 0.25), percentile(prices, 0.75)
+
+
+def recency_weighted_prediction(target_month: date, records: list[dict]) -> tuple[float, float, float]:
+    """Weighted price quantiles using only sales completed before target_month."""
+    if not records:
+        raise ValueError("Cannot estimate a price without earlier comparable sales")
+    weighted = []
+    target_number = month_number(target_month)
+    for record in records:
+        age_months = target_number - month_number(record["transaction_month"])
+        if age_months <= 0:
+            raise ValueError("A comparable sale must predate its target month")
+        weight = 0.5 ** (age_months / RECENCY_HALF_LIFE_MONTHS)
+        weighted.append((float(record["resale_price"]), weight))
+    weighted.sort(key=lambda pair: pair[0])
+    total_weight = sum(weight for _, weight in weighted)
+
+    def quantile(probability: float) -> float:
+        cutoff = total_weight * probability
+        cumulative = 0.0
+        for price, weight in weighted:
+            cumulative += weight
+            if cumulative >= cutoff:
+                return price
+        return weighted[-1][0]
+
+    return quantile(.5), quantile(.25), quantile(.75)
+
+
+def comparable_price_prediction(model_id: str, target_month: date, records: list[dict]) -> tuple[float, float, float]:
+    if model_id == "BASELINE_COMPARABLE_SALES_V1":
+        return median_prediction(records)
+    if model_id == "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1":
+        return recency_weighted_prediction(target_month, records)
+    raise ValueError(f"Unknown comparable-sales method: {model_id}")
+
+
+def select_comparable_model(metrics: list[dict]) -> str:
+    """Choose the stronger comparable price using validation sales only."""
+    validation = {
+        row["model_id"]: row for row in metrics
+        if row["dataset_split"] == "validation" and row["model_id"] in COMPARABLE_MODEL_IDS
+    }
+    if set(validation) != set(COMPARABLE_MODEL_IDS):
+        raise ValueError("Validation results are missing for a comparable-sales candidate")
+    return min(COMPARABLE_MODEL_IDS, key=lambda model_id: (
+        float(validation[model_id]["mean_absolute_error"]), model_id,
+    ))
 
 
 def distance_m(left: dict, right: dict) -> float:
@@ -252,11 +311,13 @@ def generate_predictions(records: list[dict]) -> list[dict]:
             if not comparable:
                 raise ValueError(f"No earlier comparable-sales records for {target['transaction_id']}")
 
-            for model_id, candidate_records, candidate_tier in (
-                ("BASELINE_RECENT_FLAT_TYPE_24M_V1", broad, "town_flat_type_24m"),
-                ("BASELINE_COMPARABLE_SALES_V1", comparable, tier),
+            for model_id, candidate_records, candidate_tier, prediction_method in (
+                ("BASELINE_RECENT_FLAT_TYPE_24M_V1", broad, "town_flat_type_24m", median_prediction),
+                ("BASELINE_COMPARABLE_SALES_V1", comparable, tier, median_prediction),
+                ("BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1", comparable, tier,
+                 lambda records: recency_weighted_prediction(target["transaction_month"], records)),
             ):
-                predicted, lower, upper = median_prediction(candidate_records)
+                predicted, lower, upper = prediction_method(candidate_records)
                 actual = target["resale_price"]
                 absolute_error = abs(predicted - actual)
                 predictions.append({
@@ -414,6 +475,8 @@ def run(project_root: Path) -> dict:
         "prediction_count": len(predictions),
         "transactions_missing_coordinates": sum(not has_coordinates(record) for record in records),
         "metrics": metrics,
+        "selected_comparable_model_id": select_comparable_model(metrics),
+        "comparable_selection_rule": "lowest validation MAE among comparable-sales candidates; test data is report-only",
         "prediction_file": str(prediction_path),
         "metrics_file": str(metric_csv_path),
     }

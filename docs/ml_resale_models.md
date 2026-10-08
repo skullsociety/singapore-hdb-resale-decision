@@ -89,44 +89,15 @@ updates lower/upper bounds on the selected model's test prediction rows. The
 current source data is a Sengkang pilot, so its single-town results do not
 establish performance across Singapore.
 
-## Hybrid and recent-price experiment
-
-After steps 04 and 06, run:
-
-```powershell
-.\scripts\phase_1_resale_model\08_run_hybrid_experiment.ps1
-```
-
-This optional experiment reuses the current transaction table and baseline predictions. It trains Ridge on rolling historical windows and recreates comparable-sale estimates using only earlier months. The first two training folds choose one Ridge weight in 5% increments; the third training fold checks it. A second Ridge model adds the prior 12-month median price per square metre for the same town and flat type (multiplied by subject floor area), the percentage change versus the preceding 12 months, and the prior-year sale count. Transactions in the target month or later cannot enter these features. At least ten earlier sales are required for a group median; missing medians are handled by the training pipeline.
-
-The experiment reports comparable sales, original Ridge, Ridge with recent-price features, and each Ridge variant blended with comparable sales. Validation MAE selects a candidate, and the test period is a final report-only gate. Current findings:
-
-| Candidate | Rolling check MAE | Validation MAE | Test MAE |
-|---|---:|---:|---:|
-| Comparable sales | S$49,160 | S$53,552 | S$39,679 |
-| Original Ridge | S$48,335 | S$51,017 | S$40,010 |
-| 45% Ridge / 55% comparable blend | S$45,982 | S$49,058 | S$35,790 |
-| Ridge with recent-price features | S$26,279 | S$31,311 | S$46,683 |
-
-The recent-price model won validation but failed the test gate. Its test predictions were high by S$34,238 on average. The simple blend reduced test MAE by S$3,890 versus comparable sales; a descriptive paired bootstrap 95% interval for that difference was S$2,866–S$4,950 lower. These outcomes are exploratory because earlier test results had already been reviewed while developing this project. Step 08 leaves the model selected by step 06 and the ranges/explanations from step 07 unchanged. Confirm the blend on future transactions before promoting it.
-
-| Output | Contents |
-|---|---|
-| `reports/phase_1_resale_model/08_hybrid_model_comparison.csv` | Metrics for weight tuning, rolling check, validation, and test. |
-| `reports/phase_1_resale_model/08_hybrid_flat_type_errors.csv` | Validation and test errors by flat type. |
-| `reports/phase_1_resale_model/08_hybrid_selection.json` | Weights, validation choice, test gate, paired comparison, and limitations. |
-| `data/model_ready/08_hybrid_predictions.csv` | Per-transaction predictions for each candidate and period. |
-| `models/phase_1_resale_model/08_ridge_recent_trend.joblib` | Experimental recent-price Ridge pipeline and feature definition. |
-
 ## National candidate: steps 09 and 10
 
-Run step 09 after the numbered build, baseline, model, and blend steps:
+Run step 09 after the numbered build, baseline, model, and diagnostics steps:
 
 ```powershell
 .\scripts\phase_1_resale_model\09_run_blend_calibration.ps1
 ```
 
-Step 09 reads the current Step 06 winner, calibrates its residual range using validation predictions, and reports its untouched test performance. It saves the winning model ID and artifact path in `reports/phase_1_resale_model/09_blend_release.json`; Step 10 and listing valuations load that released artifact automatically. Comparable sales remain supporting evidence and do not change the model's point estimate. The range is based on overall validation residuals, widened when fewer than five comparable sales are available. Since the winner is selected and calibrated on the same validation period, range coverage can be optimistic; a separate calibration split would improve this. The report files retain their existing `09_blend_*` names for compatibility, and the matching `pilot_blend_*` DuckDB tables are retained. The test results have already been examined during development, so future transaction data is needed for an independent release check.
+Step 09 reads the current Step 06 ML winner and checks whether it beats the selected comparable baseline on both validation and test MAE. If it does, the ML model is used. Otherwise Step 09 automatically releases the comparable baseline, explains why, and continues. It calibrates a residual range for the selected method using validation predictions and reports test performance. The selected method ID and, for ML, its artifact path are saved in `reports/phase_1_resale_model/09_blend_release.json`; Step 10 and listing valuations use that method. Comparable sales supply the ML model's starting price but are not separately blended with its final point estimate. The range is based on overall validation residuals, widened when fewer than five comparable sales are available. Since selection and calibration use validation data and the fallback decision also considers test results, a later untouched period is needed for independent confirmation. The report files retain their existing `09_blend_*` names for compatibility, and the matching `pilot_blend_*` DuckDB tables are retained.
 
 Run step 10 to estimate one known HDB flat:
 

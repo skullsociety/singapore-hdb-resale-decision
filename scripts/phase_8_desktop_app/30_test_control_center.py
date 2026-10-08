@@ -19,12 +19,68 @@ SPEC.loader.exec_module(CONTROL_CENTER)
 
 
 class ControlCenterTests(unittest.TestCase):
+    def test_model_performance_report_shows_all_methods_and_released_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = root / "reports" / "phase_1_resale_model"
+            reports.mkdir(parents=True)
+            metrics = []
+            for model_id, name, value in (
+                ("ML_RIDGE_RESALE_PRICE_V1", "ridge", 40_000),
+                ("BASELINE_COMPARABLE_SALES_V1", "comparable", 35_000),
+            ):
+                for split in ("validation", "test"):
+                    metrics.append({
+                        "model_id": model_id, "model_name": name, "dataset_split": split,
+                        "mae": value, "median_absolute_error": value / 2,
+                        "mape_pct": 5.0, "rmse": value * 1.5, "r_squared": 0.8,
+                    })
+            (reports / "06_model_selection.json").write_text(json.dumps({
+                "status": "success", "built_at_utc": "2026-10-08T10:00:00+00:00",
+                "selected_model": {"model_id": "ML_RIDGE_RESALE_PRICE_V1"}, "metrics": metrics,
+            }), encoding="utf-8")
+            (reports / "09_blend_release.json").write_text(json.dumps({
+                "status": "national_candidate", "built_at_utc": "2026-10-08T10:01:00+00:00",
+                "model_id": "BASELINE_COMPARABLE_SALES_V1", "baseline_gate": {
+                    "model_id": "ML_RIDGE_RESALE_PRICE_V1"},
+            }), encoding="utf-8")
+            release, rows = CONTROL_CENTER.model_performance_report(root)
+            self.assertEqual(release["model_id"], rows[0]["model_id"])
+            self.assertEqual(2, len(rows))
+            self.assertTrue(rows[0]["released"])
+            self.assertFalse(rows[1]["released"])
+            self.assertEqual(40_000, rows[1]["test_mae"])
+
+    def test_model_workflow_completion_opens_performance_table(self):
+        events: queue.Queue[tuple[str, str]] = queue.Queue()
+        events.put(("finished", "4. Run modelling pipeline completed"))
+        shown = []
+        statuses = []
+        center = SimpleNamespace(
+            runner=SimpleNamespace(events=events),
+            root=SimpleNamespace(after=lambda *_: None),
+            status=SimpleNamespace(set=statuses.append),
+            _active_workflow_key="model_pipeline",
+            _set_running=lambda *_: None,
+            _write_log=lambda *_: None,
+            _poll_events=lambda: None,
+            _show_model_performance=lambda: shown.append(True) or {
+                "model_id": "ML_CATBOOST_RESALE_PRICE_V1",
+                "model_name": "catboost_resale_price_v1",
+                "selection_reason": "Lower error on both periods.",
+            },
+        )
+        CONTROL_CENTER.ControlCenter._poll_events(center)
+        self.assertEqual([True], shown)
+        self.assertIn("CatBoost regression", statuses[-1])
+        self.assertIsNone(center._active_workflow_key)
+
     def test_workflow_catalog_uses_token_only_for_onemap(self):
         root = Path(__file__).resolve().parents[2]
         workflows = CONTROL_CENTER.build_workflows(root, force_download=True)
         self.assertIn("-ForceDownload", workflows["data_gov"].commands[0].argv)
         self.assertTrue(workflows["onemap"].commands[0].requires_onemap_token)
-        self.assertEqual(9, len(workflows["official_refresh"].commands))
+        self.assertEqual(8, len(workflows["official_refresh"].commands))
         self.assertEqual(5, len(workflows["dashboard_data"].commands))
 
     def test_model_pipeline_runs_diagnostics_after_training(self):
@@ -32,6 +88,8 @@ class ControlCenterTests(unittest.TestCase):
         commands = CONTROL_CENTER.build_workflows(root)["model_pipeline"].commands
         self.assertIn("06_run_resale_models.ps1", commands[2].argv[-1])
         self.assertIn("07_run_phase1_diagnostics.ps1", commands[3].argv[-1])
+        self.assertIn("09_run_blend_calibration.ps1", commands[4].argv[-1])
+        self.assertFalse(any("08_run_hybrid_experiment.ps1" in command.argv[-1] for command in commands))
 
     def test_review_button_uses_current_model_report(self):
         with tempfile.TemporaryDirectory() as directory:

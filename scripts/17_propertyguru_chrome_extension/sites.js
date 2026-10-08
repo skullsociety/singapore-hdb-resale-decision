@@ -4,19 +4,43 @@ globalThis.LISTING_SITES = Object.freeze({
     id: 'propertyguru',
     name: 'PropertyGuru Singapore HDB',
     startUrl: 'https://www.propertyguru.com.sg/hdb-for-sale',
-    pageUrl(page) {
-      return page === 1 ? this.startUrl : `${this.startUrl}/${page}`;
+    startPageUrl(url) {
+      if (!this.matches(url)) throw new Error('Unsupported PropertyGuru results URL');
+      const parsed = new URL(url);
+      if (parsed.pathname === '/property-for-sale') {
+        parsed.searchParams.set('page', '1');
+        return parsed.toString();
+      }
+      parsed.pathname = '/hdb-for-sale';
+      return parsed.toString();
+    },
+    pageUrl(page, searchUrl = this.startUrl) {
+      if (!Number.isInteger(page) || page < 1 || !this.matches(searchUrl)) return null;
+      const parsed = new URL(searchUrl);
+      if (parsed.pathname === '/property-for-sale') {
+        parsed.searchParams.set('page', String(page));
+      } else {
+        parsed.pathname = page === 1 ? '/hdb-for-sale' : `/hdb-for-sale/${page}`;
+      }
+      return parsed.toString();
     },
     matches(url) {
       try {
         const parsed = new URL(url);
-        return parsed.origin === 'https://www.propertyguru.com.sg' &&
-          /^\/hdb-for-sale(?:\/\d+)?\/?$/.test(parsed.pathname);
+        if (parsed.origin !== 'https://www.propertyguru.com.sg') return false;
+        if (/^\/hdb-for-sale(?:\/\d+)?\/?$/.test(parsed.pathname)) return true;
+        return parsed.pathname === '/property-for-sale' &&
+          parsed.searchParams.get('propertyTypeGroup')?.toUpperCase() === 'H' &&
+          (!parsed.searchParams.has('page') || /^[1-9]\d*$/.test(parsed.searchParams.get('page')));
       } catch { return false; }
     },
     pageNumber(url) {
       if (!this.matches(url)) return null;
-      const match = new URL(url).pathname.match(/\/hdb-for-sale(?:\/(\d+))?\/?$/);
+      const parsed = new URL(url);
+      if (parsed.pathname === '/property-for-sale') {
+        return Number(parsed.searchParams.get('page') || 1);
+      }
+      const match = parsed.pathname.match(/\/hdb-for-sale(?:\/(\d+))?\/?$/);
       return Number(match?.[1] || 1);
     },
     readPage(doc) {

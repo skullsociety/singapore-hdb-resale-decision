@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipCatBoost
+    [switch]$SkipCatBoost,
+    [switch]$ReselectOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,5 +22,6 @@ if ($LASTEXITCODE -ne 0) {
 
 $trainerArgs = @('--project-root', $projectRoot)
 if ($SkipCatBoost) { $trainerArgs += '--skip-catboost' }
+if ($ReselectOnly) { $trainerArgs += '--reselect-only' }
 & $venvPython $trainer @trainerArgs
 exit $LASTEXITCODE

@@ -8,6 +8,19 @@ assert.equal(site.id, 'propertyguru');
 assert.equal(site.pageNumber(site.startUrl), 1);
 assert.equal(site.pageNumber(site.startUrl + '/2'), 2);
 assert.equal(site.pageUrl(2), site.startUrl + '/2');
+const filtered = 'https://www.propertyguru.com.sg/property-for-sale?page=3&propertyTypeGroup=H&propertyTypeCode=1R&propertyTypeCode=2A&freetext=Sengkang';
+assert.equal(globalThis.findListingSite(filtered), site);
+assert.equal(site.pageNumber(filtered), 3);
+const first = new URL(site.startPageUrl(filtered));
+assert.equal(first.searchParams.get('page'), '1');
+assert.deepEqual(first.searchParams.getAll('propertyTypeCode'), ['1R', '2A']);
+assert.equal(first.searchParams.get('freetext'), 'Sengkang');
+const next = new URL(site.pageUrl(4, first.toString()));
+assert.equal(next.searchParams.get('page'), '4');
+assert.deepEqual(next.searchParams.getAll('propertyTypeCode'), ['1R', '2A']);
+assert.equal(next.searchParams.get('freetext'), 'Sengkang');
+assert.equal(globalThis.findListingSite('https://www.propertyguru.com.sg/property-for-sale?page=1'), undefined);
+assert.equal(globalThis.findListingSite('https://www.propertyguru.com.sg/property-for-sale?propertyTypeGroup=C'), undefined);
 assert.equal(globalThis.findListingSite('https://example.org/search'), undefined);
 
 const doc = {

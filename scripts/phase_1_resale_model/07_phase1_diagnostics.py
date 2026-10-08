@@ -178,6 +178,80 @@ def reliability_report(
     return output
 
 
+def detailed_error_breakdown(
+    selected_test: list[dict], rows_by_id: dict[str, dict], baseline_by_id: dict[str, dict],
+    ranges: dict[str, dict], train_rows: list[dict], baseline_id: str,
+    min_group_size: int = 30,
+) -> dict:
+    """Keep the detailed post-model error review in the exit report."""
+    train_prices = np.asarray([float(row["resale_price"]) for row in train_rows], dtype=float)
+    price_cuts = tuple(float(np.quantile(train_prices, probability)) for probability in (.25, .5, .75))
+    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for prediction in selected_test:
+        transaction_id = prediction["transaction_id"]
+        source = rows_by_id[transaction_id]
+        comparable = baseline_by_id[transaction_id]
+        town = str(source["town"])
+        lease = int(source.get("remaining_lease_months") or 0)
+        lease_band = (
+            "<60 years" if lease < 720 else "60-69 years" if lease < 840
+            else "70-79 years" if lease < 960 else "80+ years"
+        )
+        count = int(comparable.get("comparable_count") or 0)
+        count_band = "<5" if count < 5 else "5-19" if count < 20 else "20+"
+        labels = (
+            ("town", town, town),
+            ("town_flat_type", town, str(source["flat_type"])),
+            ("town_lease_band", town, lease_band),
+            ("town_predicted_price_band", town, band(float(prediction["predicted_price"]), price_cuts)),
+            ("town_comparable_tier", town, str(comparable["comparable_tier"])),
+            ("town_comparable_count_band", town, count_band),
+            ("transaction_month", "ALL", source["transaction_month"].strftime("%Y-%m")),
+        )
+        for label in labels:
+            groups[label].append(prediction)
+
+    output = []
+    for (dimension, town, group), predictions in sorted(groups.items()):
+        model_result = calculate_metrics(predictions, ranges)
+        comparable_rows = [baseline_by_id[row["transaction_id"]] for row in predictions]
+        baseline_result = calculate_metrics(comparable_rows)
+        model_mae = model_result["mae"]
+        baseline_mae = baseline_result["mae"]
+        output.append({
+            "dimension": dimension, "town": town, "group": group,
+            "sale_count": len(predictions),
+            "model_mae_sgd": model_mae,
+            "baseline_mae_sgd": baseline_mae,
+            "model_minus_baseline_mae_sgd": round(model_mae - baseline_mae, 2),
+            "model_mape_pct": model_result["mape_pct"],
+            "model_mean_bias_sgd": model_result["mean_bias"],
+            "model_p90_absolute_error_sgd": model_result["p90_absolute_error"],
+            "diagnostic_range_coverage_pct": model_result["interval_coverage_pct"],
+            "evidence_status": (
+                "limited_sales" if len(predictions) < min_group_size else
+                "model_higher_mae" if model_mae > baseline_mae else "model_lower_mae"
+            ),
+        })
+    priority = [
+        row for row in output
+        if row["dimension"] == "town_flat_type" and row["sale_count"] >= 100
+    ]
+    priority.sort(key=lambda row: (-row["model_mape_pct"], -row["sale_count"], row["town"]))
+    return {
+        "baseline_model_id": baseline_id,
+        "minimum_group_size": min_group_size,
+        "notes": [
+            "Each group uses the same test transactions for the model and comparable baseline.",
+            "Predicted price bands use the model estimate, which is available before the actual sale price.",
+            "Range coverage here uses Step 7 diagnostic ranges; Step 9 final ranges have a separate backtest.",
+            "Small groups are descriptive and should not drive a separate model decision.",
+        ],
+        "highest_percentage_error_town_flat_types": priority[:10],
+        "segments": output,
+    }
+
+
 def compare_validation_calibrators(
     validation_rows: list[dict], predictions_by_id: dict[str, dict],
     model_id: str, min_group_rows: int = 100,
@@ -334,7 +408,9 @@ def explain_ridge(
     train_rows = [row for row in rows if row["dataset_split"] == "train"]
     flat_types = sorted({str(row["flat_type"]) for row in train_rows})
     trainer = load_module("resale_trainer", project_root / "scripts/phase_1_resale_model" / "06_train_resale_models.py")
-    feature_names, vectors = trainer.feature_records(rows, flat_types)
+    feature_names, vectors = trainer.baseline_aware_features(rows, flat_types)
+    if feature_names != artifact["feature_columns"]:
+        raise ValueError("Ridge explanation feature schema differs from the saved model")
     matrix = np.asarray(vectors, dtype=object)
     test_rows = [row for row in rows if row["dataset_split"] == "test"]
     test_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "test"]
@@ -373,9 +449,9 @@ def explain_ridge(
             "ridge_intercept": round(intercept, 2),
             "top_positive_contributions_json": json.dumps(positive, ensure_ascii=False),
             "top_negative_contributions_json": json.dumps(negative, ensure_ascii=False),
-            "reconstructed_estimate": round(intercept + float(np.sum(values)), 2),
+            "reconstructed_estimate": round(float(row[trainer.COMPARABLE_FEATURE]) + intercept + float(np.sum(values)), 2),
             "actual_price_for_backtest_only": float(row["resale_price"]),
-            "explanation_note": "Dollar contributions are additive model associations relative to the fitted Ridge baseline, not causal effects.",
+            "explanation_note": "Earlier comparable price plus Ridge intercept and contributions reconstructs this estimate; contributions are associations, not causal effects.",
         })
     return output
 
@@ -393,6 +469,7 @@ def run(project_root: Path) -> dict:
     baseline_predictions = read_csv(project_root / "data" / "model_ready" / "baseline_predictions.csv")
     selection = json.loads((project_root / "reports/phase_1_resale_model" / "06_model_selection.json").read_text(encoding="utf-8"))
     model_id = selection["selected_model"]["model_id"]
+    comparable_model_id = selection.get("comparable_model_id", "BASELINE_COMPARABLE_SALES_V1")
     selected_rows = [row for row in model_predictions if row["model_id"] == model_id and row["dataset_split"] in {"validation", "test"}]
     if len(selected_rows) != len(validation_rows) + len(test_rows):
         raise ValueError("Selected model prediction rows do not match the validation/test transaction counts.")
@@ -424,8 +501,10 @@ def run(project_root: Path) -> dict:
 
     baseline_by_id = {
         row["transaction_id"]: row for row in baseline_predictions
-        if row["model_id"] == "BASELINE_COMPARABLE_SALES_V1" and row["dataset_split"] == "test"
+        if row["model_id"] == comparable_model_id and row["dataset_split"] == "test"
     }
+    for row in test_rows:
+        row[trainer.COMPARABLE_FEATURE] = float(baseline_by_id[row["transaction_id"]]["predicted_price"])
     comparable_counts = {
         transaction_id: int(row.get("comparable_count") or 0)
         for transaction_id, row in baseline_by_id.items()
@@ -494,7 +573,10 @@ def run(project_root: Path) -> dict:
         row["model_id"]: row for row in selection["metrics"] if row["dataset_split"] == "test"
     }
     simple_baseline = baseline_test_metrics["BASELINE_RECENT_FLAT_TYPE_24M_V1"]
-    comparable_baseline = baseline_test_metrics["BASELINE_COMPARABLE_SALES_V1"]
+    comparable_baseline = baseline_test_metrics[comparable_model_id]
+    error_breakdown = detailed_error_breakdown(
+        selected_test, rows_by_id, baseline_by_id, ranges, train_rows, comparable_model_id,
+    )
     criteria = [
         {
             "criterion": "Beat the simple median baseline and report the comparable-sales benchmark on later unseen transactions",
@@ -529,6 +611,7 @@ def run(project_root: Path) -> dict:
         "status": overall,
         "reviewed_at_utc": datetime.now(timezone.utc).isoformat(),
         "selected_model_id": model_id,
+        "comparable_model_id": comparable_model_id,
         "selected_model_validation_mae": selection["selected_model"]["validation_mae"],
         "selected_model_test_mae": test_model_metrics["mae"],
         "simple_baseline_test_mae": simple_baseline["mae"],
@@ -543,9 +626,10 @@ def run(project_root: Path) -> dict:
         "limitations": [
             "Overall metrics can hide weaker performance in individual towns; review town-level results before release.",
             "Observed test coverage is below the mean nominal level; passing the five-percentage-point pilot tolerance does not remove undercoverage risk. Use ranges as estimates, not official valuations.",
-            "The validation calibration window was reserved for residual calibration, but the existing selected model had previously been chosen using the full validation period; test coverage is therefore the final independent check.",
+            "The validation calibration window overlaps the period used for model selection. Test results were inspected during development and informed later selection changes; evaluate a later untouched transaction period for independent confirmation.",
             "Comparable evidence ranks registered sales by transparent distance, size, floor, and recency criteria; it does not observe renovation, unit condition, orientation, or view.",
         ],
+        "error_breakdown": error_breakdown,
     }
 
     reports = project_root / "reports/phase_1_resale_model"

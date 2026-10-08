@@ -30,6 +30,23 @@ def card(number):
 
 
 class ReceiverTests(unittest.TestCase):
+    def test_hdb_query_results_urls_are_accepted_with_matching_page_number(self):
+        url = ("https://www.propertyguru.com.sg/property-for-sale?"
+               "page=2&propertyTypeGroup=H&propertyTypeCode=1R&propertyTypeCode=2A")
+        self.assertTrue(receiver.propertyguru_page_matches(url, 2))
+        self.assertFalse(receiver.propertyguru_page_matches(url, 1))
+        self.assertFalse(receiver.propertyguru_page_matches(
+            "https://www.propertyguru.com.sg/property-for-sale?page=2&propertyTypeGroup=C", 2))
+        self.assertFalse(receiver.propertyguru_page_matches(
+            "https://example.org/property-for-sale?page=2&propertyTypeGroup=H", 2))
+        source_site, _source, accepted = receiver.validate_payload({
+            "source_site": "propertyguru", "run_id": "12345678-1234-1234-1234-123456789abc",
+            "page_number": 2, "total_pages": 2, "advertised_count": 3,
+            "source_url": url, "cards": [card(100)],
+        })
+        self.assertEqual("propertyguru", source_site)
+        self.assertEqual(1, len(accepted))
+
     def test_incomplete_card_address_and_numeric_title(self):
         cases = [
             ("500261756", "blk 327B anchorvale road sengkang", "anchorvale road",

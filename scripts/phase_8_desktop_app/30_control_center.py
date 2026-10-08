@@ -15,7 +15,7 @@ import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, END, PanedWindow, StringVar, Tk, messagebox
+from tkinter import BooleanVar, Canvas, END, PanedWindow, StringVar, Tk, Toplevel, messagebox
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -28,6 +28,17 @@ ONEMAP_TOKEN_URL = "https://www.onemap.gov.sg/api/auth/post/getToken"
 PROPERTYGURU_HDB_URL = "https://www.propertyguru.com.sg/hdb-for-sale"
 NINETY_NINE_HDB_URL = "https://www.99.co/singapore/sale/hdb"
 SRX_HDB_URL = "https://www.srx.com.sg/singapore-property-listings/hdb-for-sale"
+MODEL_LABELS = {
+    "ML_RIDGE_RESALE_PRICE_V1": "Ridge regression",
+    "ML_GRADIENT_BOOSTING_RESALE_PRICE_V1": "Huber gradient boosting",
+    "ML_SKLEARN_QUANTILE_P50_V1": "Histogram boosting quantiles (P50)",
+    "ML_RANDOM_FOREST_SQUARED_ERROR_V1": "Random forest (squared error)",
+    "ML_CATBOOST_RESALE_PRICE_V1": "CatBoost regression",
+    "ML_CATBOOST_QUANTILE_P50_V1": "CatBoost quantiles (P50)",
+    "BASELINE_RECENT_FLAT_TYPE_24M_V1": "Town / flat-type median",
+    "BASELINE_COMPARABLE_SALES_V1": "Comparable-sales median",
+    "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1": "Recency-weighted comparable median",
+}
 
 
 @dataclass(frozen=True)
@@ -128,7 +139,6 @@ def build_workflows(project_root: Path, force_download: bool = False) -> dict[st
             ("05_run_feature_price_analysis.ps1", "Analyse feature relationships"),
             ("06_run_resale_models.ps1", "Train resale-price models"),
             ("07_run_phase1_diagnostics.ps1", "Run model diagnostics"),
-            ("08_run_hybrid_experiment.ps1", "Evaluate the hybrid estimate"),
             ("09_run_blend_calibration.ps1", "Calibrate the selected model"),
         )
     )
@@ -214,6 +224,50 @@ def diagnostics_review_path(project_root: Path) -> Path:
     if reviewed_model_id != selected_model_id or reviewed_at < trained_at:
         raise ValueError("The saved diagnostics review is from an earlier training run. Wait for Button 4's diagnostics step to finish, or run diagnostics again.")
     return review_path
+
+
+def model_performance_report(project_root: Path) -> tuple[dict, list[dict]]:
+    """Read the completed training and release reports for the UI table."""
+    reports = project_root / "reports" / "phase_1_resale_model"
+    try:
+        training = json.loads((reports / "06_model_selection.json").read_text(encoding="utf-8"))
+        release = json.loads((reports / "09_blend_release.json").read_text(encoding="utf-8"))
+        metrics = training["metrics"]
+        selected_id = release["model_id"]
+        release_time = datetime.fromisoformat(release["built_at_utc"])
+        training_time = datetime.fromisoformat(training["built_at_utc"])
+        if training.get("status") != "success" or release.get("status") != "national_candidate":
+            raise ValueError("The training or release report is incomplete")
+        if release_time < training_time:
+            raise ValueError("The release report predates the latest model training")
+        if release.get("baseline_gate", {}).get("model_id") != training["selected_model"]["model_id"]:
+            raise ValueError("The release report does not match the latest selected model")
+        by_model: dict[str, dict] = {}
+        for metric in metrics:
+            by_model.setdefault(metric["model_id"], {})[metric["dataset_split"]] = metric
+        rows = []
+        for model_id, splits in by_model.items():
+            if "validation" not in splits or "test" not in splits:
+                continue
+            test = splits["test"]
+            rows.append({
+                "model_id": model_id,
+                "name": MODEL_LABELS.get(model_id, test["model_name"]),
+                "type": "Baseline" if model_id.startswith("BASELINE_") else "ML",
+                "validation_mae": float(splits["validation"]["mae"]),
+                "test_mae": float(test["mae"]),
+                "test_median_ae": float(test["median_absolute_error"]),
+                "test_mape_pct": float(test["mape_pct"]),
+                "test_rmse": float(test["rmse"]),
+                "test_r_squared": float(test["r_squared"]),
+                "released": model_id == selected_id,
+            })
+        if not rows or not any(row["released"] for row in rows):
+            raise ValueError("The released method has no matching performance row")
+        rows.sort(key=lambda row: (row["test_mae"], row["name"]))
+        return release, rows
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Cannot show model results: {error}") from error
 
 
 class WorkflowRunner:
@@ -427,6 +481,8 @@ class ControlCenter:
         self.runner = WorkflowRunner(project_root)
         self.dashboard = DashboardProcess(project_root, self.runner.events)
         self.workflow_buttons: list[ttk.Button] = []
+        self._active_workflow_key: str | None = None
+        self._performance_window: Toplevel | None = None
         self._build_window()
         self._refresh_file_status()
         self.root.after(100, self._poll_events)
@@ -630,6 +686,10 @@ class ControlCenter:
             button.pack(fill="x", pady=2)
             self.workflow_buttons.append(button)
             if key == "model_pipeline":
+                ttk.Button(
+                    frame, text="Open model performance table",
+                    command=self._show_model_performance,
+                ).pack(fill="x", pady=2)
                 self.review_button = ttk.Button(
                     frame, text="Open model diagnostics review",
                     command=self._open_diagnostics_review,
@@ -644,6 +704,59 @@ class ControlCenter:
         except (OSError, ValueError) as error:
             messagebox.showerror("Cannot open diagnostics review", str(error))
 
+    def _show_model_performance(self) -> dict | None:
+        try:
+            release, rows = model_performance_report(self.project_root)
+        except ValueError as error:
+            messagebox.showerror("Model results unavailable", str(error))
+            return None
+        if self._performance_window is not None and self._performance_window.winfo_exists():
+            self._performance_window.destroy()
+        window = Toplevel(self.root)
+        self._performance_window = window
+        window.title("Model performance and selected method")
+        window.geometry("1050x440")
+        window.minsize(760, 340)
+        panel = ttk.Frame(window, padding=12)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="Model performance", font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(
+            panel,
+            text=f"Chosen for valuation: {MODEL_LABELS.get(release['model_id'], release['model_name'])} ({release['release_type'].replace('_', ' ')})",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(6, 0))
+        ttk.Label(panel, text=release["selection_reason"], wraplength=980).pack(anchor="w", pady=(2, 8))
+        ttk.Label(
+            panel,
+            text="Lower MAE, median error, MAPE and RMSE are better; higher R² is better. ★ marks the released method. ML selection uses recent validation MAE; the release check also compares test MAE with the baseline.",
+            wraplength=980,
+        ).pack(anchor="w", pady=(0, 8))
+        table_frame = ttk.Frame(panel)
+        table_frame.pack(fill="both", expand=True)
+        columns = ("method", "type", "validation_mae", "test_mae", "median_ae", "mape", "rmse", "r2")
+        headings = ("Method", "Type", "Validation MAE", "Test MAE", "Test median error", "Test MAPE", "Test RMSE", "Test R²")
+        widths = (265, 75, 115, 105, 125, 90, 110, 75)
+        table = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        for column, heading, width in zip(columns, headings, widths):
+            table.heading(column, text=heading)
+            table.column(column, width=width, minwidth=65, anchor="w" if column == "method" else "e")
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=table.xview)
+        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        table.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        for row in rows:
+            table.insert("", "end", values=(
+                ("★ " if row["released"] else "") + row["name"], row["type"],
+                f"S${row['validation_mae']:,.0f}", f"S${row['test_mae']:,.0f}",
+                f"S${row['test_median_ae']:,.0f}", f"{row['test_mape_pct']:.2f}%",
+                f"S${row['test_rmse']:,.0f}", f"{row['test_r_squared']:.3f}",
+            ))
+        return release
+
     def _start(self, key: str) -> None:
         database_workflows = {"official_refresh", "build_database", "model_pipeline", "dashboard_data"}
         if self.dashboard.running and key in database_workflows:
@@ -656,6 +769,7 @@ class ControlCenter:
         workflow = workflows[key]
         try:
             self.runner.start(workflow, self.onemap_token.get())
+            self._active_workflow_key = key
         except (RuntimeError, ValueError) as error:
             messagebox.showerror("Cannot start workflow", str(error))
 
@@ -760,11 +874,19 @@ class ControlCenter:
                 elif event == "log":
                     self._write_log(message)
                 elif event in {"finished", "failed"}:
+                    completed_key = self._active_workflow_key
+                    self._active_workflow_key = None
                     self._set_running(False)
                     self.status.set(message)
                     self._write_log(message)
                     if event == "failed":
                         messagebox.showerror("Workflow stopped", message)
+                    elif completed_key in {"model_pipeline", "official_refresh"}:
+                        release = self._show_model_performance()
+                        if release:
+                            chosen = MODEL_LABELS.get(release["model_id"], release["model_name"])
+                            self.status.set(f"{message} — chosen method: {chosen}")
+                            self._write_log(f"Chosen valuation method: {chosen}. {release['selection_reason']}")
                 elif event == "dashboard":
                     self.status.set(message)
                     self._write_log(message)

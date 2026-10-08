@@ -113,7 +113,9 @@ def fit_ridge(models, matrix: np.ndarray, rows: list[dict], train_indices: list[
     }
 
 
-def training_comparables(rows: list[dict], target_ids: set[str], baselines) -> tuple[dict[str, float], set[str]]:
+def training_comparables(
+    rows: list[dict], target_ids: set[str], baselines, comparable_model_id: str,
+) -> tuple[dict[str, float], set[str]]:
     by_month: dict[date, list[dict]] = defaultdict(list)
     for row in rows:
         if row["dataset_split"] == "train":
@@ -134,7 +136,9 @@ def training_comparables(rows: list[dict], target_ids: set[str], baselines) -> t
             if not selected:
                 without_history.add(transaction_id)
             else:
-                result[transaction_id] = round(baselines.median_prediction(selected)[0], 2)
+                result[transaction_id] = round(baselines.comparable_price_prediction(
+                    comparable_model_id, month, selected,
+                )[0], 2)
             if processed % progress_interval == 0 or processed == len(target_ids):
                 print(f"Rolling comparables: {processed:,}/{len(target_ids):,} fold sales checked.", flush=True)
         # Current-month transactions cannot become comparables until the next month.
@@ -180,6 +184,8 @@ def run(project_root: Path) -> dict:
     script_dir = Path(__file__).resolve().parent
     models = load_script(script_dir / "06_train_resale_models.py", "resale_model_module")
     baselines = load_script(script_dir / "04_build_baselines.py", "baseline_module")
+    selection = json.loads((project_root / "reports/phase_1_resale_model/06_model_selection.json").read_text(encoding="utf-8"))
+    comparable_model_id = selection.get("comparable_model_id", "BASELINE_COMPARABLE_SALES_V1")
     rows = models.read_transactions(project_root / "data" / "property.duckdb")
     for row in rows:
         row["transaction_month"] = models.as_date(row["transaction_month"])
@@ -203,7 +209,7 @@ def run(project_root: Path) -> dict:
                       "transaction_ids": sorted(base_predictions)})
         print(f"Completed {label}: {len(fit_indices):,} earlier sales, {len(eval_indices):,} predictions.", flush=True)
 
-    oof_comparable, without_history = training_comparables(rows, set(oof_ridge), baselines)
+    oof_comparable, without_history = training_comparables(rows, set(oof_ridge), baselines, comparable_model_id)
     for fold in folds:
         fold["comparable_prediction_rows"] = sum(key in oof_comparable for key in fold["transaction_ids"])
         fold["excluded_no_prior_comparables"] = len(fold["transaction_ids"]) - fold["comparable_prediction_rows"]
@@ -222,7 +228,7 @@ def run(project_root: Path) -> dict:
     train_indices = [i for i, row in enumerate(rows) if row["dataset_split"] == "train"]
     trend_model, later_trend = fit_ridge(models, trend_matrix, rows, train_indices, val_test, trend_names)
     existing_ridge = read_prediction_file(project_root / "data/model_ready/06_ml_predictions.csv", "ML_RIDGE_RESALE_PRICE_V1")
-    existing_comparable = read_prediction_file(project_root / "data/model_ready/baseline_predictions.csv", "BASELINE_COMPARABLE_SALES_V1")
+    existing_comparable = read_prediction_file(project_root / "data/model_ready/baseline_predictions.csv", comparable_model_id)
     later_ids = {rows[i]["transaction_id"] for i in val_test}
     if set(existing_ridge) != later_ids or set(existing_comparable) != later_ids or set(later_trend) != later_ids:
         raise ValueError("Existing Ridge, comparable, and new trend predictions must cover identical validation/test transactions")
@@ -316,6 +322,7 @@ def run(project_root: Path) -> dict:
                  "trend_definition": "Prior 12-month same-town/flat-type median price per sqm times subject area; prior 12 versus previous 12-month percentage change; prior 12-month sale count. Same-month and future sales excluded."}, report_paths["trend_model"])
     summary = {
         "status": "success", "run_at_utc": datetime.now(timezone.utc).isoformat(),
+        "comparable_model_id": comparable_model_id,
         "weight_tuning_period": [folds[0]["start"], folds[1]["end"]],
         "ridge_weight": ridge_weight, "trend_ridge_weight": trend_weight,
         "weight_tuning_mae": {"ridge_blend": round(ridge_tune_mae, 2), "trend_blend": round(trend_tune_mae, 2)},

@@ -179,18 +179,22 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
     trainer = load_module(phase1 / "06_train_resale_models.py", "phase4_models")
     baseline = load_module(phase1 / "04_build_baselines.py", "phase4_baseline")
     release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
-    required_release_fields = {"model_id", "model_artifact", "feature_columns", "residual_offsets_sgd"}
+    required_release_fields = {"model_id", "comparable_method", "residual_offsets_sgd"}
     if release.get("status") != "national_candidate" or not required_release_fields.issubset(release):
-        raise ValueError("No approved model release is available; review the Step 09 release report")
+        raise ValueError("No selected price method is available; review the Step 09 release report")
+    baseline_release = release["model_id"] == release["comparable_method"]
+    if not baseline_release and (not release.get("model_artifact") or not release.get("feature_columns")):
+        raise ValueError("The selected ML release is missing its artifact or feature schema; rerun Phase 1 steps 06–07 and 09")
     if release["source_build_run_id"] != metadata["pipeline_run_id"]:
         raise ValueError("property.duckdb changed after model calibration; rerun Phase 1 steps 04–09")
     month = date.today().replace(day=1)
     if month_number(month) - month_number(metadata["latest_month"]) > 12:
         raise ValueError("Transaction data is over 12 months old; refresh Phase 1 before valuation")
-    artifact_path = Path(release["model_artifact"])
-    if not artifact_path.is_absolute():
-        artifact_path = root / artifact_path
-    flat_types = sorted({row["flat_type"] for row in transactions})
+    if not baseline_release:
+        artifact_path = Path(release["model_artifact"])
+        if not artifact_path.is_absolute():
+            artifact_path = root / artifact_path
+    flat_types = sorted({row["flat_type"] for row in transactions if row["dataset_split"] == "train"})
     block_names = {row["block_id"]: (row["block"], row["street"]) for row in block_lookup.values()}
     prepared = []
     failures = {}
@@ -222,21 +226,38 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                 **block,
             }
             prepared.append((feature, scenario, assumptions, source))
+    sales = [row for row in transactions if row["transaction_month"] < month]
+    history = baseline.ComparableHistory()
+    history.add(sales)
+    comparable_by_scenario = {}
+    supported = []
+    for item in prepared:
+        source = item[3]
+        candidates, tier = baseline.select_comparables(source, history)
+        if not candidates:
+            failures[item[0]["listing_key"]] = "no_earlier_comparable_sales"
+            continue
+        source[trainer.COMPARABLE_FEATURE] = float(baseline.comparable_price_prediction(
+            release.get("comparable_method", "BASELINE_COMPARABLE_SALES_V1"), month, candidates,
+        )[0])
+        comparable_by_scenario[source["transaction_id"]] = (candidates, tier)
+        supported.append(item)
+    prepared = supported
     if prepared:
-        names, vectors = trainer.feature_records([item[3] for item in prepared], flat_types)
-        if names != release.get("feature_columns"):
-            raise ValueError("Feature schema differs from the released model; rerun Phase 1 steps 06–09")
-        model_prices = trainer.predict_with_artifact(
-            artifact_path, release["model_id"], names, np.asarray(vectors, dtype=object),
-        )
+        if baseline_release:
+            model_prices = [item[3][trainer.COMPARABLE_FEATURE] for item in prepared]
+        else:
+            names, vectors = trainer.baseline_aware_features([item[3] for item in prepared], flat_types)
+            if names != release["feature_columns"]:
+                raise ValueError("Feature schema differs from the released model; rerun Phase 1 steps 06–07 and 09")
+            model_prices = trainer.predict_with_artifact(
+                artifact_path, release["model_id"], names, np.asarray(vectors, dtype=object),
+            )
     else:
         model_prices = []
-    sales = [row for row in transactions if row["transaction_month"] < month]
     scenarios_by_listing = defaultdict(list)
     for (feature, scenario, assumptions, source), model_raw in zip(prepared, model_prices):
-        candidates, tier = baseline.select_comparables(
-            source, [row for row in sales if row["flat_type"] == source["flat_type"]]
-        )
+        candidates, tier = comparable_by_scenario[source["transaction_id"]]
         comparable_count = len(candidates)
         result = {"scenario": scenario["scenario"], "storey_range": scenario["storey_range"],
                   "model_price": round(max(1.0, float(model_raw)), 2),
@@ -250,7 +271,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                        "lower": round(max(1.0, point + low_offset), 2),
                        "upper": round(point + high_offset, 2)})
         if comparable_count:
-            comparable_price = float(baseline.median_prediction(candidates)[0])
+            comparable_price = float(source[trainer.COMPARABLE_FEATURE])
             ranked = []
             for sale in candidates:
                 distance = baseline.distance_m(source, sale)
@@ -303,7 +324,10 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
             else "scenario_range" if len(valid) >= 2
             else "single_scenario_low_confidence"
         )
-        valuation_note = "Floor and flat model are inferred; verify unit details before relying on the estimate."
+        valuation_note = (
+            f"Valuation method: {release.get('model_name', release['model_id'])}. "
+            "Floor and flat model are inferred; verify unit details before relying on the estimate."
+        )
         if minimum_comparables < 3:
             valuation_note += " Fewer than three comparable sales support this estimate."
         output.append({**{field: feature[field] for field in ("source_site", "run_id", "listing_id")},

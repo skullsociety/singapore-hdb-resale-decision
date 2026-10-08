@@ -9,7 +9,7 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import duckdb
 
@@ -26,11 +26,15 @@ propertyguru = load_parser()
 
 
 def propertyguru_page_matches(url: str, number: int) -> bool:
-    expected = propertyguru.SEARCH_URL if number == 1 else f"{propertyguru.SEARCH_URL}/{number}"
-    actual_url, expected_url = urlparse(url), urlparse(expected)
-    return (actual_url.scheme, actual_url.netloc, actual_url.path.rstrip("/")) == (
-        expected_url.scheme, expected_url.netloc, expected_url.path.rstrip("/")
-    )
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "www.propertyguru.com.sg":
+        return False
+    if parsed.path.rstrip("/") == "/property-for-sale":
+        params = parse_qs(parsed.query)
+        return (params.get("propertyTypeGroup") == ["H"] and
+                params.get("page", ["1"]) == [str(number)])
+    expected_path = "/hdb-for-sale" if number == 1 else f"/hdb-for-sale/{number}"
+    return parsed.path.rstrip("/") == expected_path
 
 
 # Add an approved site here and a matching adapter in the extension. No table change is needed.
@@ -48,6 +52,7 @@ MAX_BODY = 256_000
 LOCK = threading.Lock()
 DB_NAME = "listings.db"
 TABLE = "listings"
+RECEIVER_VERSION = 2
 
 # One row per source + collection run + listing. Repeated cards in a run merge.
 COLUMNS = {
@@ -206,7 +211,8 @@ class Receiver(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send(200, {"status": "ready", "database": DB_NAME, "table": TABLE})
+            self._send(200, {"status": "ready", "database": DB_NAME, "table": TABLE,
+                             "receiver_version": RECEIVER_VERSION})
         else:
             self._send(404, {"error": "not found"})
 

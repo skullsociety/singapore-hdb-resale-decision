@@ -31,6 +31,17 @@ function Test-Receiver {
     }
 }
 
+try {
+    $receiverHealth = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
+} catch {
+    $receiverHealth = $null
+}
+if ($receiverHealth -and $receiverHealth.status -eq 'ready' -and
+    $receiverHealth.database -eq 'listings.db' -and
+    [int]$receiverHealth.receiver_version -lt 2) {
+    throw 'An older listing receiver is still running on port 8771. Stop that receiver process, then run Step 5 again.'
+}
+
 if (-not (Test-Receiver)) {
     $arguments = '"{0}" --project-root "{1}" --port 8771' -f $receiver, $projectRoot
     Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $projectRoot -WindowStyle Hidden | Out-Null

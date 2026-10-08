@@ -114,8 +114,8 @@ def ridge_contributions(pipeline, vector: np.ndarray, feature_columns: list[str]
     names = pipeline.named_steps["features"].get_feature_names_out()
     values = np.asarray(transformed[0], dtype=float) * np.asarray(regressor.coef_, dtype=float).reshape(-1)
     intercept = float(np.asarray(regressor.intercept_).reshape(-1)[0])
-    ridge_price = max(1.0, float(pipeline.predict(vector)[0]))
-    if abs((intercept + float(values.sum())) - ridge_price) > .02:
+    ridge_adjustment = float(pipeline.predict(vector)[0])
+    if abs((intercept + float(values.sum())) - ridge_adjustment) > .02:
         raise ValueError("Ridge explanation does not reconstruct its estimate")
     order = sorted(range(len(values)), key=lambda i: abs(values[i]), reverse=True)
     def label(raw: str) -> str:
@@ -131,9 +131,9 @@ def ridge_contributions(pipeline, vector: np.ndarray, feature_columns: list[str]
                 for i in order if values[i] > 0][:5]
     negative = [{"feature": label(str(names[i])), "ridge_contribution_sgd": round(float(values[i]), 2)}
                 for i in order if values[i] < 0][:5]
-    return ridge_price, {"ridge_intercept_sgd": round(intercept, 2),
+    return ridge_adjustment, {"ridge_intercept_sgd": round(intercept, 2),
                          "top_positive": positive, "top_negative": negative,
-                         "note": "Ridge contributions are model associations, not causal price adjustments."}
+                         "note": "Add the Ridge adjustment to the earlier comparable price. Contributions are model associations, not causal price adjustments."}
 
 
 def rank_comparables(target: dict, selected: list[dict], baseline, blocks: dict[str, tuple[str, str]]) -> list[dict]:
@@ -172,9 +172,12 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
     if release["status"] != "national_candidate":
         raise ValueError("No approved model release is available; review the Step 09 release report")
-    required_release_fields = {"model_id", "model_artifact", "feature_columns", "residual_offsets_sgd"}
+    required_release_fields = {"model_id", "comparable_method", "residual_offsets_sgd"}
     if not required_release_fields.issubset(release):
         raise ValueError("Model release is outdated; rerun steps 06–09")
+    baseline_release = release["model_id"] == release["comparable_method"]
+    if not baseline_release and (not release.get("model_artifact") or not release.get("feature_columns")):
+        raise ValueError("Model release is missing its artifact or feature schema; rerun steps 06–09")
     month = parse_month(args.valuation_month)
     flat_type = normalise(args.flat_type)
     storey_range = normalise(args.storey_range)
@@ -222,29 +225,37 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
             "building_age_at_transaction": month.year - int(block["year_completed"]),
             **block,
         }
-        # The project model expects the same names as the transaction feature table.
-        flat_types = sorted({row[1] for row in train_info})
-        names, vectors = trainer.feature_records([source], flat_types)
-        if names != release.get("feature_columns"):
-            raise ValueError("Feature schema differs from the released model; rerun steps 06–09")
-        artifact_path = Path(release["model_artifact"])
-        if not artifact_path.is_absolute():
-            artifact_path = root / artifact_path
-        model_id = release["model_id"]
-        model_price = float(trainer.predict_with_artifact(
-            artifact_path, model_id, names, np.asarray(vectors, dtype=object),
-        )[0])
-        explanation = None
-        if model_id == "ML_RIDGE_RESALE_PRICE_V1":
-            artifact = joblib.load(artifact_path)
-            _, explanation = ridge_contributions(artifact["pipeline"], np.asarray(vectors, dtype=object), names)
         all_sales = baseline.load_records(connection)
         prior_sales = [row for row in all_sales if row["transaction_month"] < month
                        and row["town"] == block["town"] and row["flat_type"] == flat_type]
+        comparable_history = baseline.ComparableHistory()
+        comparable_history.add(prior_sales)
+        candidates, tier = baseline.select_comparables(source, comparable_history)
+        if not candidates:
+            raise ValueError("No earlier comparable sales are available for this flat; a baseline-aware model cannot estimate its price")
+        comparable_price = float(baseline.comparable_price_prediction(
+            release.get("comparable_method", "BASELINE_COMPARABLE_SALES_V1"), month, candidates,
+        )[0])
+        model_id = release["model_id"]
+        explanation = None
+        if baseline_release:
+            model_price = comparable_price
+        else:
+            source[trainer.COMPARABLE_FEATURE] = comparable_price
+            flat_types = sorted({row[1] for row in train_info})
+            names, vectors = trainer.baseline_aware_features([source], flat_types)
+            if names != release["feature_columns"]:
+                raise ValueError("Feature schema differs from the released model; rerun steps 06–09")
+            artifact_path = Path(release["model_artifact"])
+            if not artifact_path.is_absolute():
+                artifact_path = root / artifact_path
+            model_price = float(trainer.predict_with_artifact(
+                artifact_path, model_id, names, np.asarray(vectors, dtype=object),
+            )[0])
+            if model_id == "ML_RIDGE_RESALE_PRICE_V1":
+                artifact = joblib.load(artifact_path)
+                _, explanation = ridge_contributions(artifact["pipeline"], np.asarray(vectors, dtype=object), names)
         block_names = {row[0]: (row[1], row[2]) for row in connection.execute("SELECT block_id, block, street FROM hdb_blocks").fetchall()}
-    comparable_history = baseline.ComparableHistory()
-    comparable_history.add(prior_sales)
-    candidates, tier = baseline.select_comparables(source, comparable_history)
     warnings = ["National candidate estimate; review town-level validation before relying on it.",
                 "Unit condition, renovation, exact floor, view, and seller circumstances are unavailable."]
     if inferred_model:
@@ -259,10 +270,11 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         warnings.append("Latest available transaction is more than three months before this valuation month.")
     if flat_type == "2 ROOM":
         warnings.append("Two-room estimates should be reviewed alongside the available comparable sales.")
-    comparable_price = float(baseline.median_prediction(candidates)[0]) if candidates else None
     result = {
         "status": "estimate", "model_id": model_id,
         "model_name": release.get("model_name", model_id), "valuation_month": month.isoformat(),
+        "release_type": "comparable_baseline" if baseline_release else "machine_learning",
+        "selection_reason": release.get("selection_reason"),
         "source_latest_transaction_month": latest_sale_month.isoformat(),
         "subject": {"block": block["block"], "street": block["street"],
                     "flat_type": flat_type, "flat_model": flat_model,
@@ -271,7 +283,8 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
                     "lease_commence_year": lease_year},
         "model_estimate_sgd": round(model_price, 2),
         "comparable_sales_estimate_sgd": round(comparable_price, 2) if comparable_price is not None else None,
-        "weights": {"selected_model": 1.0, "comparable_sales": 0.0},
+        "weights": {"selected_model": 0.0 if baseline_release else 1.0,
+                    "comparable_sales": 1.0 if baseline_release else 0.0},
         "price_estimate_sgd": round(model_price, 2), "lower_estimate_sgd": None, "upper_estimate_sgd": None,
         "range_method": release["calibration_method"],
         "nominal_range_coverage_pct": None,
@@ -284,7 +297,7 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         "warnings": warnings,
     }
     if len(candidates) < 3:
-        result["warnings"].append("Fewer than three earlier comparable sales were found; the model estimate is available, but there is limited local sales evidence.")
+        result["warnings"].append("Fewer than three earlier comparable sales were found; this estimate has limited local sales evidence.")
     level = "97.5" if len(candidates) < 5 else "95"
     low_offset, high_offset = release["residual_offsets_sgd"][level]
     low = round(max(1.0, min(model_price, model_price + low_offset)), 2)
