@@ -229,9 +229,29 @@ def listing_choices() -> dict[str, dict]:
 
 def listing_detail_page() -> None:
     st.header("Listing details")
-    choices = listing_choices()
+    all_choices = listing_choices()
+    categories = sorted({
+        row["stakeholder_category"] for row in all_choices.values()
+        if row.get("stakeholder_category")
+    })
+    selected_category = st.selectbox(
+        "Price assessment",
+        ["All categories", *categories],
+        format_func=lambda value: value.replace("_", " ").title(),
+    )
+    choices = all_choices if selected_category == "All categories" else {
+        label: row for label, row in all_choices.items()
+        if row.get("stakeholder_category") == selected_category
+    }
+    st.caption(f"Showing {len(choices):,} of {len(all_choices):,} listings")
+    if not choices:
+        st.info("No listings match this price assessment.")
+        return
     label = st.selectbox("Choose a listing", list(choices))
     listing = choices[label]
+    if listing.get("listing_url"):
+        source_name = "PropertyGuru" if listing.get("source_site") == "propertyguru" else "original"
+        st.link_button(f"Open {source_name} listing", listing["listing_url"])
     with st.container(horizontal=True):
         st.metric("Asking price", money(listing.get("asking_price_sgd")), border=True)
         st.metric("Lower estimate", money(listing.get("lower_estimate_sgd")), border=True)
@@ -273,7 +293,7 @@ def listing_detail_page() -> None:
     st.subheader("Supporting comparable sales")
     st.write(
         "These are earlier registered resale transactions used as evidence for the comparable-sales "
-        "part of the estimate. The accepted estimate combines 45% Ridge model and 55% comparable-sales evidence."
+        "starting price. The displayed estimate uses the currently released valuation method."
     )
     with st.expander("How comparable sales are selected"):
         st.markdown("""
@@ -313,7 +333,6 @@ The listing cards do not reliably provide exact storey, flat model, or lease com
             "Distance (m)": st.column_config.NumberColumn(format="%,.0f"),
         },
     )
-    st.link_button("Open original listing", listing["listing_url"])
 
 
 def changes_page() -> None:
