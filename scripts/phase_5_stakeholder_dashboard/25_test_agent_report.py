@@ -17,7 +17,7 @@ class AgentReportTests(unittest.TestCase):
     def listing(self):
         return {
             "listing_id": "123", "title": "Test flat", "address": "1 Test Street",
-            "stakeholder_category": "strong_candidate", "asking_price_sgd": 600000,
+            "stakeholder_category": "below_estimate", "asking_price_sgd": 600000,
             "lower_estimate_sgd": 590000, "point_estimate_sgd": 620000,
             "upper_estimate_sgd": 650000, "asking_premium_discount_pct": -3.2,
             "inferred_flat_type": "4 ROOM", "floor_area_sqm": 90,
@@ -35,7 +35,7 @@ class AgentReportTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", content)
         self.assertNotIn("<script>", content)
         self.assertIn("@media print", content)
-        self.assertIn("<dt>Category</dt><dd>Good price</dd>", content)
+        self.assertIn("<dt>Category</dt><dd>Asking below estimate</dd>", content)
 
     def test_report_uses_slightly_expensive_label(self):
         listing = self.listing()

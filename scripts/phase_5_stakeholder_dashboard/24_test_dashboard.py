@@ -22,9 +22,10 @@ class DashboardSmokeTests(unittest.TestCase):
         subheaders = [element.value for element in app.subheader]
         self.assertIn("**What each category means**", markdown_values)
         self.assertIn("Listings by flat type", subheaders)
-        self.assertEqual("Good price", app.metric[2].label)
+        self.assertEqual("To investigate low price", app.metric[2].label)
         category_names = app.table[0].value["Category"].tolist()
-        self.assertIn("Good price", category_names)
+        self.assertIn("To investigate low price", category_names)
+        self.assertIn("Asking below estimate", category_names)
         self.assertIn("Slightly expensive", category_names)
 
     def test_listing_details_page_opens_with_comparable_explanation(self):

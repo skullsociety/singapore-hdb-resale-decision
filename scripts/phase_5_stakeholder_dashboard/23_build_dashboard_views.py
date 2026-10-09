@@ -111,8 +111,11 @@ def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], bu
                             OR r.minimum_comparable_count < p.minimum_comparable_count
                            THEN 'insufficient_evidence'
                        WHEN NOT r.eligible THEN 'does_not_match'
+                       WHEN r.lower_estimate_sgd IS NOT NULL
+                            AND r.asking_price_sgd < r.lower_estimate_sgd
+                           THEN 'investigate_low_price'
                        WHEN r.asking_price_sgd <= r.point_estimate_sgd
-                           THEN 'strong_candidate'
+                           THEN 'below_estimate'
                        WHEN r.asking_price_sgd <= r.upper_estimate_sgd
                            THEN 'fairly_priced'
                        WHEN r.asking_price_sgd <= r.upper_estimate_sgd *
@@ -129,8 +132,11 @@ def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], bu
                    CASE
                        WHEN v.valuation_status <> 'estimated' THEN v.valuation_note
                        WHEN NOT r.eligible THEN COALESCE(r.ranking_notes, 'Does not meet required preferences')
+                       WHEN r.lower_estimate_sgd IS NOT NULL
+                            AND r.asking_price_sgd < r.lower_estimate_sgd
+                           THEN 'Asking price is below the research range. Investigate the listing and unit details; the reason is unknown.'
                        WHEN r.asking_price_sgd <= r.point_estimate_sgd
-                           THEN 'Asking price is at or below the research point estimate.'
+                           THEN 'Asking price is within the research range, at or below the point estimate.'
                        WHEN r.asking_price_sgd <= r.upper_estimate_sgd
                            THEN 'Asking price is above the point estimate but within the research range.'
                        WHEN r.asking_price_sgd <= r.upper_estimate_sgd *
@@ -177,7 +183,8 @@ def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], bu
                    COALESCE(inferred_flat_type, 'Unknown') AS flat_type,
                    COUNT(*) AS listing_count,
                    COUNT(*) FILTER (WHERE valuation_status = 'estimated') AS valued_count,
-                   COUNT(*) FILTER (WHERE stakeholder_category = 'strong_candidate') AS strong_candidate_count,
+                   COUNT(*) FILTER (WHERE stakeholder_category = 'investigate_low_price') AS investigate_low_price_count,
+                   COUNT(*) FILTER (WHERE stakeholder_category = 'below_estimate') AS below_estimate_count,
                    COUNT(*) FILTER (WHERE stakeholder_category = 'fairly_priced') AS fairly_priced_count,
                    COUNT(*) FILTER (WHERE stakeholder_category = 'negotiation_candidate') AS negotiation_candidate_count,
                    COUNT(*) FILTER (WHERE stakeholder_category = 'likely_expensive') AS likely_expensive_count,

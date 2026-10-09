@@ -9,7 +9,8 @@ from typing import Any
 
 
 CATEGORY_LABELS = {
-    "strong_candidate": "Good price",
+    "investigate_low_price": "To investigate low price",
+    "below_estimate": "Asking below estimate",
     "fairly_priced": "Fairly priced",
     "negotiation_candidate": "Slightly expensive",
     "likely_expensive": "Likely expensive",

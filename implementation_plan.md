@@ -276,7 +276,7 @@ Step 21 derives `listing_snapshot_history` and `listing_snapshot_runs` from the 
 | 24 | `dashboard/phase_5/24_streamlit_app.py`, `24_run_dashboard.ps1`, and its smoke test | Runs a read-only local dashboard with overview, opportunity, listing detail, changes, quality, and report pages. |
 | 25 | `dashboard/phase_5/25_agent_report.py` and its test | Creates a self-contained printable HTML comparison in memory for one to four listings, with optional locally uploaded buyer/seller planning output. |
 
-The local presentation layer currently exposes 753 current listings, 10,271 comparable-sale rows, seven data-quality results, and 14 model-evaluation rows. It assigns 275 `strong_candidate`, 429 `fairly_priced`, 17 `negotiation_candidate`, 12 `likely_expensive`, and 20 `insufficient_evidence` labels. These counts reflect the current saved snapshot and change when the source data and upstream analysis are rebuilt.
+The local presentation layer currently exposes 755 current listings, 9,995 comparable-sale rows, seven data-quality results, and 18 model-evaluation rows. It assigns 2 `investigate_low_price`, 338 `below_estimate`, 337 `fairly_priced`, 24 `negotiation_candidate`, 13 `likely_expensive`, and 41 `insufficient_evidence` labels. These counts reflect the current saved snapshot and change when the source data and upstream analysis are rebuilt. An eligible listing with adequate evidence is marked `investigate_low_price` when its asking price is below the lower end of its research range. This is a reason to check the unit and listing details, not evidence of an incident or defect.
 
 **DuckDB mental model:** A table stores physical rows in the `.db` file. A view stores a named SQL query and calculates its result from the latest underlying tables when read. Dashboard views therefore behave like tables to Streamlit, Tableau, Power BI, or DBeaver while avoiding another copied listing dataset. `dashboard_category_rules` is a table because it records configuration values. `dashboard_model_metrics` is a small table because those metrics originate in the separate `property.duckdb` file and the dashboard should need only one database at runtime.
 
@@ -292,7 +292,7 @@ The local presentation layer currently exposes 753 current listings, 10,271 comp
 4. Market changes: new, reduced, increased, unchanged, and disappeared listings by snapshot, town, and flat type.
 5. Data quality and methodology: address-match coverage, valuation coverage, missing fields, data dates, model version, accuracy metrics, and known limitations.
 
-Replace the broad pilot labels with stakeholder-facing categories before release: `strong_candidate`, `fairly_priced`, `negotiation_candidate`, `likely_expensive`, `insufficient_evidence`, and `does_not_match`. Category rules must be configurable, recorded with the run, and explained beside every listing. A positive label must continue to show the full estimated range, comparable count, confidence, and inferred fields; it must never imply a guaranteed bargain.
+Use neutral stakeholder-facing categories: `investigate_low_price`, `below_estimate`, `fairly_priced`, `negotiation_candidate`, `likely_expensive`, `insufficient_evidence`, and `does_not_match`. Category rules are recorded with the run and explained beside every listing. Every listing still shows the full estimated range, comparable count, confidence, and inferred fields; no category implies a guaranteed bargain.
 
 **Curated dashboard data layer:**
 

@@ -129,7 +129,7 @@ def overview_page() -> None:
     columns = st.columns(4)
     columns[0].metric("Current listings", f"{len(rows):,}")
     columns[1].metric("Supported estimates", f"{int((rows['valuation_status'] == 'estimated').sum()):,}")
-    columns[2].metric("Good price", f"{int(counts.get('strong_candidate', 0)):,}")
+    columns[2].metric("To investigate low price", f"{int(counts.get('investigate_low_price', 0)):,}")
     columns[3].metric("Needs more evidence", f"{int(counts.get('insufficient_evidence', 0)):,}")
     st.caption(
         "Price labels compare asking prices with research estimates. They do not assess unit condition, "
@@ -158,7 +158,8 @@ def overview_page() -> None:
     margin = rules["negotiation_margin_above_upper_pct"]
     st.markdown("**What each category means**")
     st.table([
-        {"Category": "Good price", "Definition": "Supported estimate, matches the active profile, and asking price is at or below the point estimate. Check unobserved property details."},
+        {"Category": "To investigate low price", "Definition": "Asking price is below the lower end of the research range. Investigate the reason; this does not establish an incident or defect."},
+        {"Category": "Asking below estimate", "Definition": "Asking price is within the research range, at or below its point estimate. Check unobserved property details."},
         {"Category": "Fairly priced", "Definition": "Asking price is above the point estimate but remains within the estimated price range."},
         {"Category": "Slightly expensive", "Definition": f"Asking price is above the estimated range, but no more than {margin:.0f}% above its upper end."},
         {"Category": "Likely expensive", "Definition": f"Asking price is more than {margin:.0f}% above the upper end of the estimated range."},
@@ -174,7 +175,7 @@ def overview_page() -> None:
     summary = query("SELECT * FROM dashboard_market_overview ORDER BY town, flat_type")
     summary["latest_observation_utc"] = summary["latest_observation_utc"].astype(str).str[:10]
     summary = summary[[
-        "flat_type", "listing_count", "valued_count", "strong_candidate_count",
+        "flat_type", "listing_count", "valued_count", "investigate_low_price_count", "below_estimate_count",
         "fairly_priced_count", "negotiation_candidate_count", "likely_expensive_count",
         "insufficient_evidence_count", "median_asking_price_sgd",
         "median_premium_discount_pct", "latest_observation_utc",
@@ -182,7 +183,8 @@ def overview_page() -> None:
         "flat_type": "Flat type (inferred)",
         "listing_count": "Listings",
         "valued_count": "With estimate",
-        "strong_candidate_count": "Good price",
+        "investigate_low_price_count": "To investigate low price",
+        "below_estimate_count": "Asking below estimate",
         "fairly_priced_count": "Fairly priced",
         "negotiation_candidate_count": "Slightly expensive",
         "likely_expensive_count": "Likely expensive",

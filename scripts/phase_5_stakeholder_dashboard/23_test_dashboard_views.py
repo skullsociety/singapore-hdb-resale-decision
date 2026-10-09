@@ -14,7 +14,7 @@ EXPECTED_VIEWS = {
     "dashboard_model_performance",
 }
 EXPECTED_CATEGORIES = {
-    "strong_candidate", "fairly_priced", "negotiation_candidate",
+    "investigate_low_price", "below_estimate", "fairly_priced", "negotiation_candidate",
     "likely_expensive", "insufficient_evidence", "does_not_match",
 }
 
@@ -54,11 +54,24 @@ class DashboardViewTests(unittest.TestCase):
         self.assertTrue(categories <= EXPECTED_CATEGORIES)
         unsupported_positive = self.connection.execute("""
             SELECT COUNT(*) FROM dashboard_current_listings
-            WHERE stakeholder_category IN ('strong_candidate', 'fairly_priced',
+            WHERE stakeholder_category IN ('investigate_low_price', 'below_estimate', 'fairly_priced',
                   'negotiation_candidate', 'likely_expensive')
               AND (valuation_status <> 'estimated' OR minimum_comparable_count < 3)
         """).fetchone()[0]
         self.assertEqual(0, unsupported_positive)
+
+    def test_low_price_category_uses_lower_estimate(self):
+        mismatched = self.connection.execute("""
+            SELECT COUNT(*) FROM dashboard_current_listings
+            WHERE eligible AND valuation_status = 'estimated'
+              AND minimum_comparable_count >= 3
+              AND lower_estimate_sgd IS NOT NULL
+              AND (
+                  (asking_price_sgd < lower_estimate_sgd AND stakeholder_category <> 'investigate_low_price')
+                  OR (asking_price_sgd >= lower_estimate_sgd AND stakeholder_category = 'investigate_low_price')
+              )
+        """).fetchone()[0]
+        self.assertEqual(0, mismatched)
 
     def test_local_training_evidence_is_available_to_dashboard(self):
         missing = self.connection.execute("""
