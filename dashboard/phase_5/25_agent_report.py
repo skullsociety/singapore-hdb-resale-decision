@@ -8,6 +8,20 @@ from datetime import datetime
 from typing import Any
 
 
+CATEGORY_LABELS = {
+    "strong_candidate": "Good price",
+    "fairly_priced": "Fairly priced",
+    "negotiation_candidate": "Slightly expensive",
+    "likely_expensive": "Likely expensive",
+    "insufficient_evidence": "Insufficient evidence",
+    "does_not_match": "Does not match",
+}
+
+
+def category_label(value: str | None) -> str:
+    return CATEGORY_LABELS.get(value, str(value or "").replace("_", " ").capitalize())
+
+
 def money(value: Any) -> str:
     return "—" if value is None else f"S${float(value):,.0f}"
 
@@ -69,7 +83,7 @@ def build_report(
           <h2>{html.escape(listing.get('title') or listing_id)}</h2>
           <p class="address">{html.escape(listing.get('address') or '')}</p>
           <dl>
-            <dt>Category</dt><dd>{html.escape(str(listing.get('stakeholder_category', '')).replace('_', ' ').title())}</dd>
+            <dt>Category</dt><dd>{html.escape(category_label(listing.get('stakeholder_category')))}</dd>
             <dt>Asking price</dt><dd>{money(listing.get('asking_price_sgd'))}</dd>
             <dt>Research range</dt><dd>{money(listing.get('lower_estimate_sgd'))} – {money(listing.get('upper_estimate_sgd'))}</dd>
             <dt>Point estimate</dt><dd>{money(listing.get('point_estimate_sgd'))}</dd>

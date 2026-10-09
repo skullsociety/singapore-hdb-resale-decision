@@ -105,7 +105,9 @@ def apply_filters(frame):
     categories = sorted(frame["stakeholder_category"].dropna().unique().tolist())
     flat_types = sorted(frame["inferred_flat_type"].dropna().unique().tolist())
     selected_towns = st.multiselect("Town", towns, default=towns)
-    selected_categories = st.multiselect("Category", categories, default=categories)
+    selected_categories = st.multiselect(
+        "Category", categories, default=categories, format_func=REPORT.category_label,
+    )
     selected_types = st.multiselect("Flat type", flat_types, default=flat_types)
     maximum = int(frame["asking_price_sgd"].max()) if not frame.empty else 0
     budget = st.number_input(
@@ -127,11 +129,14 @@ def overview_page() -> None:
     columns = st.columns(4)
     columns[0].metric("Current listings", f"{len(rows):,}")
     columns[1].metric("Supported estimates", f"{int((rows['valuation_status'] == 'estimated').sum()):,}")
-    columns[2].metric("Strong candidates", f"{int(counts.get('strong_candidate', 0)):,}")
+    columns[2].metric("Good price", f"{int(counts.get('strong_candidate', 0)):,}")
     columns[3].metric("Needs more evidence", f"{int(counts.get('insufficient_evidence', 0)):,}")
-    st.caption("Current scope is the available pilot data. Categories are screening aids, not confirmed bargains.")
+    st.caption(
+        "Price labels compare asking prices with research estimates. They do not assess unit condition, "
+        "property history, defects, or other details missing from the data."
+    )
     chart = counts.rename_axis("Category").reset_index(name="Listings")
-    chart["Category"] = chart["Category"].str.replace("_", " ").str.title()
+    chart["Category"] = chart["Category"].map(REPORT.category_label)
     category_chart = (
         alt.Chart(chart)
         .mark_bar()
@@ -153,9 +158,9 @@ def overview_page() -> None:
     margin = rules["negotiation_margin_above_upper_pct"]
     st.markdown("**What each category means**")
     st.table([
-        {"Category": "Strong candidate", "Definition": "Supported estimate, matches the active profile, and asking price is at or below the point estimate."},
+        {"Category": "Good price", "Definition": "Supported estimate, matches the active profile, and asking price is at or below the point estimate. Check unobserved property details."},
         {"Category": "Fairly priced", "Definition": "Asking price is above the point estimate but remains within the estimated price range."},
-        {"Category": "Negotiation candidate", "Definition": f"Asking price is above the estimated range, but no more than {margin:.0f}% above its upper end."},
+        {"Category": "Slightly expensive", "Definition": f"Asking price is above the estimated range, but no more than {margin:.0f}% above its upper end."},
         {"Category": "Likely expensive", "Definition": f"Asking price is more than {margin:.0f}% above the upper end of the estimated range."},
         {"Category": "Insufficient evidence", "Definition": "No supported estimate is available, or there are too few comparable transactions."},
         {"Category": "Does not match", "Definition": "An estimate exists, but the listing does not meet the active search profile."},
@@ -177,9 +182,9 @@ def overview_page() -> None:
         "flat_type": "Flat type (inferred)",
         "listing_count": "Listings",
         "valued_count": "With estimate",
-        "strong_candidate_count": "Strong candidates",
+        "strong_candidate_count": "Good price",
         "fairly_priced_count": "Fairly priced",
-        "negotiation_candidate_count": "Negotiation candidates",
+        "negotiation_candidate_count": "Slightly expensive",
         "likely_expensive_count": "Likely expensive",
         "insufficient_evidence_count": "Insufficient evidence",
         "median_asking_price_sgd": "Median asking price",
@@ -206,7 +211,10 @@ def opportunity_page() -> None:
         "asking_premium_discount_pct", "minimum_comparable_count", "confidence_label",
         "change_type", "listing_url",
     ]
-    st.dataframe(selected[columns], hide_index=True, width="stretch", column_config={
+    display = selected[columns].copy()
+    display["stakeholder_category"] = display["stakeholder_category"].map(REPORT.category_label)
+    st.dataframe(display, hide_index=True, width="stretch", column_config={
+        "stakeholder_category": st.column_config.TextColumn("Price assessment"),
         "listing_url": st.column_config.LinkColumn("Original listing", display_text="Open"),
         "asking_price_sgd": st.column_config.NumberColumn("Asking price", format="S$ %,.0f"),
         "lower_estimate_sgd": st.column_config.NumberColumn("Estimate low", format="S$ %,.0f"),
@@ -237,7 +245,7 @@ def listing_detail_page() -> None:
     selected_category = st.selectbox(
         "Price assessment",
         ["All categories", *categories],
-        format_func=lambda value: value.replace("_", " ").title(),
+        format_func=lambda value: value if value == "All categories" else REPORT.category_label(value),
     )
     choices = all_choices if selected_category == "All categories" else {
         label: row for label, row in all_choices.items()
@@ -263,7 +271,7 @@ def listing_detail_page() -> None:
             else f"{listing['asking_premium_discount_pct']:+.1f}%",
             border=True,
         )
-    st.subheader(str(listing.get("stakeholder_category", "")).replace("_", " ").title())
+    st.subheader(REPORT.category_label(listing.get("stakeholder_category")))
     st.write(listing.get("category_reason") or "")
     if listing.get("verify_low_price"):
         st.warning("The asking price is unusually far below the research range. Verify the listing and unit details.")

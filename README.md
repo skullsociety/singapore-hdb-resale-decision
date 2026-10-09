@@ -276,7 +276,7 @@ Step 24 uses **Streamlit**, a Python web-interface framework. Each filter or sel
 
 Step 25 is part of the Streamlit **Comparison report** page. A user selects up to four listings, may use the current dashboard buyer or seller plan or attach an earlier planning JSON, add a neutral report reference, and add comparison notes. The app creates a self-contained HTML report in memory. Nothing is saved by the project until the user clicks **Download printable report**; the downloaded file can be opened in a browser and printed or saved as PDF. This supports the longer-term goal of software that an end user can operate locally without DBeaver or command-line SQL.
 
-The local build currently presents 753 listings, 10,271 supporting comparable rows, seven data-quality checks, and 14 model-evaluation rows. The current category counts are 275 strong candidates, 429 fairly priced, 17 negotiation candidates, 12 likely expensive, and 20 with insufficient evidence. These are research categories based on the saved snapshot and model evidence, not confirmed bargains or official valuations.
+The local build currently presents 753 listings, 10,271 supporting comparable rows, seven data-quality checks, and 14 model-evaluation rows. The current category counts are 275 good price, 429 fairly priced, 17 slightly expensive, 12 likely expensive, and 20 with insufficient evidence. These are asking-price comparisons based on the saved snapshot and model evidence, not assessments of unit condition, property history, or official valuations.
 
 ### Later online access
 

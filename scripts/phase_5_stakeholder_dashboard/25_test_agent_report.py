@@ -35,6 +35,13 @@ class AgentReportTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", content)
         self.assertNotIn("<script>", content)
         self.assertIn("@media print", content)
+        self.assertIn("<dt>Category</dt><dd>Good price</dd>", content)
+
+    def test_report_uses_slightly_expensive_label(self):
+        listing = self.listing()
+        listing["stakeholder_category"] = "negotiation_candidate"
+        content = REPORT.build_report([listing], {}).decode("utf-8")
+        self.assertIn("<dt>Category</dt><dd>Slightly expensive</dd>", content)
 
     def test_report_limits_comparison_to_four(self):
         with self.assertRaises(ValueError):
