@@ -20,10 +20,9 @@ COMPARABLE_ID = "BASELINE_COMPARABLE_SALES_V1"
 MIN_RECENT_TOWN_FLAT_SALES = 100
 
 
-def recent_local_training_counts(train_rows: list[dict]) -> tuple[date, date, Counter]:
-    """Use the latest two calendar years of the fitted training split."""
+def recent_local_training_counts(train_rows: list[dict], training_start: date) -> tuple[date, date, Counter]:
+    """Count the same town/flat-type sales eligible for model fitting."""
     training_end = max(row["transaction_month"] for row in train_rows)
-    training_start = date(training_end.year - 1, 1, 1)
     counts = Counter(
         (row["town"], row["flat_type"]) for row in train_rows
         if row["transaction_month"] >= training_start
@@ -198,7 +197,11 @@ def run(root: Path) -> dict:
     ]
     if len(residuals) < 100:
         raise ValueError("Too few validation residuals for price range calibration")
-    recent_start, training_end, local_counts = recent_local_training_counts(train)
+    if not selection.get("training_start_month"):
+        raise ValueError("Step 06 model report lacks the training start month; rerun Step 06")
+    recent_start, training_end, local_counts = recent_local_training_counts(
+        train, date.fromisoformat(selection["training_start_month"]),
+    )
     def low_local_evidence(row: dict) -> bool:
         return local_counts[row["town"], row["flat_type"]] < MIN_RECENT_TOWN_FLAT_SALES
 
@@ -311,6 +314,7 @@ def run(root: Path) -> dict:
         "selection_reason": selection_reason,
         "baseline_gate": gate,
         "model_name": selected_model["model_name"] if use_ml else models.BASELINE_NAMES[comparable_id],
+        "model_training_start_month": selection["training_start_month"],
         "built_at_utc": datetime.now(timezone.utc).isoformat(),
         "model_artifact": selection["artifacts"][selected_id] if use_ml else None,
         "feature_columns": selection["feature_columns"] if use_ml else [],

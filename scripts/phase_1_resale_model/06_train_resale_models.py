@@ -99,6 +99,7 @@ PREDICTION_COLUMNS = [
 ]
 CAT_COLUMNS = ["town", "flat_type", "flat_model"]
 CATBOOST_EARLY_STOPPING_ROUNDS = 50
+TRAINING_START_MONTH = date(2023, 1, 1)
 AMENITIES = [
     "primary_schools", "childcare_centres", "healthcare_clinics", "polyclinics",
     "hospitals", "community_clubs", "hawker_centres", "mrt_lrt_stations",
@@ -644,10 +645,15 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
             anchors[row["transaction_id"]] = saved["predicted_price"]
     for row in rows:
         row[COMPARABLE_FEATURE] = anchors.get(row["transaction_id"])
-    eligible_train = [row for row in train if row[COMPARABLE_FEATURE] is not None]
+    recent_train = [row for row in train if as_date(row["transaction_month"]) >= TRAINING_START_MONTH]
+    eligible_train = [row for row in recent_train if row[COMPARABLE_FEATURE] is not None]
     if not eligible_train:
-        raise ValueError("No training transactions have earlier comparable sales")
-    print(f"Comparable anchors available for {len(eligible_train):,}/{len(train):,} training sales.", flush=True)
+        raise ValueError("No sales in the selected training window have earlier comparable sales")
+    print(
+        f"Training from {TRAINING_START_MONTH.isoformat()}: {len(eligible_train):,}/{len(recent_train):,} "
+        f"recent sales have earlier comparable prices; {len(train) - len(recent_train):,} older sales "
+        "remain available as comparable history.", flush=True,
+    )
     y_train = np.asarray([float(row["resale_price"]) - row[COMPARABLE_FEATURE] for row in eligible_train], dtype=float)
     y_validation = np.asarray([float(row["resale_price"]) - row[COMPARABLE_FEATURE] for row in validation], dtype=float)
     flat_types = sorted({str(row["flat_type"]) for row in train})
@@ -672,7 +678,8 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
         if not (skip_catboost and model_id.startswith("ML_CATBOOST"))
     }
 
-    train_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "train" and row[COMPARABLE_FEATURE] is not None]
+    eligible_ids = {row["transaction_id"] for row in eligible_train}
+    train_indices = [index for index, row in enumerate(rows) if row["transaction_id"] in eligible_ids]
     validation_indices = [index for index, row in enumerate(rows) if row["dataset_split"] == "validation"]
     eval_indices = [index for index, row in enumerate(rows) if row["dataset_split"] in {"validation", "test"}]
     eval_matrix = matrix[eval_indices]
@@ -814,7 +821,7 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
                             **{key: round(value, 4) if value is not None else None for key, value in result.items()}})
     selection = select_validation_model(model_predictions, metric_rows, artifacts)
     selected_id = selection["model_id"]
-    train_prices = [float(row["resale_price"]) for row in train]
+    train_prices = [float(row["resale_price"]) for row in eligible_train]
     cut_points = tuple(float(np.quantile(train_prices, q)) for q in (0.25, 0.5, 0.75))
     error_rows = error_analysis(all_predictions, row_by_id, cut_points)
     selected_at = datetime.now(timezone.utc).isoformat()
@@ -833,8 +840,11 @@ def run(project_root: Path, skip_catboost: bool = False) -> dict:
     summary = {
         "status": "success", "built_at_utc": built_at,
         "target": "residual_to_earlier_comparable_price", "comparable_model_id": comparable_model_id,
+        "training_start_month": TRAINING_START_MONTH.isoformat(),
+        "training_end_month": max(as_date(row["transaction_month"]) for row in eligible_train).isoformat(),
         "training_rows": len(eligible_train),
-        "training_rows_without_earlier_comparables": len(train) - len(eligible_train),
+        "training_rows_without_earlier_comparables": len(recent_train) - len(eligible_train),
+        "earlier_training_rows_kept_for_comparable_history": len(train) - len(recent_train),
         "validation_rows": len(validation), "test_rows": len(test),
         "feature_count": len(column_names), "feature_columns": column_names,
         "metrics": metric_rows, "selected_model": selection,
