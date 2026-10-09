@@ -105,12 +105,13 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_1_resale_model/05_analyse_feature_price_correlations.py` | Reports feature associations with resale price, reusing price calculations and compact column data to reduce runtime and memory use. |
 | `scripts/phase_1_resale_model/06_run_resale_models.ps1` | Checks required packages and starts model training and comparison; `-ReselectOnly` reapplies the selection rule to saved model results without retraining. |
 | `scripts/phase_1_resale_model/06_train_resale_models.py` | Trains six models to adjust an earlier comparable-sales price, selects by recent validation MAE, and saves the artifacts; includes an 80-tree squared-error random forest, quantile boosting with early stopping, progress updates, and 5-worker limits. |
+| `scripts/experiments/covid_training_window/compare_training_windows.py` | Separately compares 2017-, 2020-, and 2023-onward training for the current CatBoost model on identical later sales; does not alter the released model. |
 | `scripts/phase_1_resale_model/07_run_phase1_diagnostics.ps1` | Runs reliability and explanation checks. |
 | `scripts/phase_1_resale_model/07_phase1_diagnostics.py` | Examines errors and ranges; appends detailed town, flat-type, lease, comparable, predicted-price, and month breakdowns to the exit review. Provides Ridge contributions when Ridge wins and marks individual explanations unavailable for nonlinear models. |
 | `scripts/phase_1_resale_model/09_run_blend_calibration.ps1` | Runs calibration and backtesting for the selected model. |
-| `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Compares the trained model with the selected comparable method on validation and test MAE, automatically chooses the winner, and calibrates its price range. |
+| `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Chooses ML or the comparable method, calibrates the price range, and checks a wider range for town/flat-type groups with fewer than 100 recent training sales. |
 | `scripts/phase_1_resale_model/10_run_flat_valuation.ps1` | Starts a valuation for one flat. |
-| `scripts/phase_1_resale_model/10_predict_flat.py` | Prices one flat with the released model and shows comparable sales as supporting evidence. |
+| `scripts/phase_1_resale_model/10_predict_flat.py` | Prices one flat with the released model, comparable sales, and a limited-local-evidence warning and wider range where applicable. |
 | `scripts/phase_2_buyer_planner/11_buyer_cost_planner.py` | Calculates buyer cash, CPF, duties, and loan scenarios. |
 | `scripts/phase_2_buyer_planner/11_test_buyer_cost_planner.py` | Tests the buyer calculations. |
 | `scripts/phase_3_seller_planner/13_seller_proceeds_planner.py` | Calculates sale proceeds, CPF refunds, and shortfalls. |
@@ -129,7 +130,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/17_propertyguru_chrome_extension/15_test_listing_sites.js` | Tests listing-page recognition and parsing. |
 | `scripts/17_propertyguru_chrome_extension/15_test_collector_recovery.js` | Tests collection recovery after a reload. |
 | `scripts/phase_4_market_watch/16_import_legacy_propertyguru.py` | One-time import of an older saved run into DuckDB. |
-| `scripts/phase_4_market_watch/17_19_build_listing_analysis.py` | Performs Steps 17–19: matches listings to HDB blocks, adds property and amenity features, and estimates fair-price ranges. |
+| `scripts/phase_4_market_watch/17_19_build_listing_analysis.py` | Performs Steps 17–19: matches listings to blocks, adds features, and estimates prices with a wider calibrated range for sparse local training groups. |
 | `scripts/phase_4_market_watch/17_19_test_listing_analysis.py` | Tests address normalization, block matching, flat-type inference, and storey scenarios used by Steps 17–19. |
 | `scripts/phase_4_market_watch/20_22_build_market_watch.py` | Performs Steps 20–22: saves a search profile, ranks current listings, tracks snapshots, and creates the market-watch report. |
 | `scripts/phase_4_market_watch/20_22_test_market_watch.py` | Tests preference validation, deal-ranking rules, and price-change tracking. |
@@ -206,7 +207,9 @@ The repeatable build adds three tables to the existing `data/listings.db`; it do
 | 18 | `listing_features` | Adds block details, coordinates, nearby amenities and an inferred flat type. |
 | 19 | `listing_valuations` | Applies the released model and stores a price range, asking-price difference, confidence, scenarios and supporting comparable count. |
 
-PropertyGuru result cards do not reliably contain the exact flat model, lease commencement year or floor range. The build therefore infers flat type from floor area and evaluates storey scenarios observed in historical transactions for the matched block. These assumptions are recorded in the database. A listing is marked `not_valued` when the available evidence is insufficient; the build does not invent a price. The current Sengkang snapshot contains 753 listings: 752 block matches, 733 estimates and 20 withheld estimates. The machine-readable run summary is `reports/phase_4_market_watch/19_listing_analysis_summary.json`.
+PropertyGuru result cards do not reliably contain the exact flat model, lease commencement year or floor range. The build therefore infers flat type from floor area and evaluates storey scenarios observed in historical transactions for the matched block. These assumptions are recorded in the database. A listing is marked `not_valued` when the available evidence is insufficient; the build does not invent a price. The latest local Sengkang snapshot contains 755 listings: 733 block matches, 714 estimates and 41 withheld estimates. The machine-readable run summary is `reports/phase_4_market_watch/19_listing_analysis_summary.json`.
+
+The October 2026 local-evidence safeguard counts real training sales for the same town and flat type from January 2023 through the September 2024 training cutoff. Below 100, it keeps the released price model, flags limited local evidence, and uses a separate, wider interval calibrated on validation sales. This does **not** substitute fabricated sales or switch to an older model. The wider range covered 98.25% of later validation sales and 94.79% of test sales in the sparse group (729 test sales), against a nominal 97.5%; it is still a research range, not a promise of coverage for one town. After a future model rebuild, Step 09 recalculates the recent calendar-year window and its range. Rebuild Steps 09, 17–19, 20–22 and 23 to carry the safeguard into the dashboard database. The current listing snapshot is Sengkang, where no estimated listing falls below this local training threshold; the warning will appear for affected towns when their listings are collected.
 
 To inspect the estimates in DBeaver, refresh the database and open `listing_valuations`, or run:
 
@@ -396,7 +399,7 @@ The launcher passes the token to the extractor for that run and does not save it
 
 ## Current model snapshot
 
-The latest recorded model release covers 26 towns and selects CatBoost's median estimate. Its test MAE was S$36,187, compared with S$39,679 for the original comparable-sales median and S$83,421 for the simple town/flat-type median. Step 4 now also reports a recency-weighted comparable candidate: S$40,828 validation MAE and S$37,903 test MAE, compared with S$51,061 and S$39,679 for the original comparable median. The saved CatBoost artifact was trained before this Step 4 change; rerun Steps 6–7 and 9 to measure the model with the new starting price. See `reports/phase_1_resale_model/04_baseline_metrics.json`, `07_phase1_exit_review.json`, and `09_blend_release.json`. The Step 7 review places a detailed `error_breakdown` after its original summary and limitations.
+The latest recorded model release covers 26 towns and selects CatBoost's median estimate. Its test MAE is S$33,467, compared with S$37,903 for the selected recency-weighted comparable method, S$39,679 for the original comparable median, and S$83,421 for the simple town/flat-type median. See `reports/phase_1_resale_model/04_baseline_metrics.json`, `07_phase1_exit_review.json`, and `09_blend_release.json`. The Step 7 review places a detailed `error_breakdown` after its original summary and limitations.
 
 The added breakdown compares model and comparable errors on the same test sales by town, flat type, lease band, predicted price band, comparable tier and count, and month. Groups with fewer than 30 sales are marked as limited evidence. Its currently saved results still describe the earlier CatBoost training run; rerun Steps 6–7 and 9 to update them. The plan does not add an automatic price correction solely because a town has few sales, or split the model at a fixed price threshold. See `implementation_plan.md` for the reasons and next validation step.
 

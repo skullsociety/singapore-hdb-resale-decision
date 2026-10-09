@@ -90,8 +90,9 @@ def build_report(
             <dt>Difference</dt><dd>{number(listing.get('asking_premium_discount_pct'), '%')}</dd>
             <dt>Inferred unit</dt><dd>{html.escape(listing.get('inferred_flat_type') or 'Unknown')}, {number(listing.get('floor_area_sqm'), ' sqm')}</dd>
             <dt>Comparable evidence</dt><dd>{int(listing.get('minimum_comparable_count') or 0)} minimum; {html.escape(listing.get('confidence_label') or '')}</dd>
+            <dt>Recent local training sales</dt><dd>{html.escape(str(listing.get('recent_town_flat_training_sales') if listing.get('recent_town_flat_training_sales') is not None else 'Unavailable'))}</dd>
           </dl>
-          <p>{html.escape(listing.get('category_reason') or '')}{html.escape(warning)}</p>
+          <p>{html.escape(listing.get('category_reason') or '')}{html.escape(warning)} {html.escape(listing.get('valuation_note') or '')}</p>
           <p><a href="{html.escape(listing.get('listing_url') or '', quote=True)}">Open original listing</a></p>
         </section>""")
         comparable_rows = []

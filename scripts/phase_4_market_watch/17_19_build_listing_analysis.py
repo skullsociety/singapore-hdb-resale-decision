@@ -174,6 +174,17 @@ def scenario_inputs(block: dict, flat_type: str, area: float, transactions: list
                        "scenario_basis": "observed same-block flat-type transactions"}
 
 
+def scenario_price_range(point: float, comparable_count: int, recent_local_sales: int,
+                         release: dict) -> tuple[float, float, bool]:
+    local_policy = release["local_evidence"]
+    limited_local = recent_local_sales < local_policy["minimum_training_sales"]
+    level = "97.5" if comparable_count < 5 else "95"
+    low_offset, high_offset = (local_policy["residual_offsets_sgd"] if limited_local
+                               else release["residual_offsets_sgd"][level])
+    return (round(max(1.0, point + low_offset), 2),
+            round(point + high_offset, 2), limited_local)
+
+
 def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transactions: list[dict], metadata: dict) -> list[dict]:
     phase1 = root / "scripts/phase_1_resale_model"
     trainer = load_module(phase1 / "06_train_resale_models.py", "phase4_models")
@@ -187,6 +198,17 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         raise ValueError("The selected ML release is missing its artifact or feature schema; rerun Phase 1 steps 06–07 and 09")
     if release["source_build_run_id"] != metadata["pipeline_run_id"]:
         raise ValueError("property.duckdb changed after model calibration; rerun Phase 1 steps 04–09")
+    local_policy = release.get("local_evidence")
+    if not local_policy:
+        raise ValueError("Model release lacks local-evidence calibration; rerun Step 09")
+    training_end = max(row["transaction_month"] for row in transactions if row["dataset_split"] == "train")
+    if training_end.isoformat() != local_policy["training_end_month"]:
+        raise ValueError("Local-evidence counts are stale; rerun Step 09")
+    recent_local_counts = Counter(
+        (row["town"], row["flat_type"]) for row in transactions
+        if row["dataset_split"] == "train"
+        and row["transaction_month"] >= date.fromisoformat(local_policy["training_start_month"])
+    )
     month = date.today().replace(day=1)
     if month_number(month) - month_number(metadata["latest_month"]) > 12:
         raise ValueError("Transaction data is over 12 months old; refresh Phase 1 before valuation")
@@ -259,17 +281,17 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
     for (feature, scenario, assumptions, source), model_raw in zip(prepared, model_prices):
         candidates, tier = comparable_by_scenario[source["transaction_id"]]
         comparable_count = len(candidates)
+        recent_local_sales = recent_local_counts[source["town"], source["flat_type"]]
         result = {"scenario": scenario["scenario"], "storey_range": scenario["storey_range"],
                   "model_price": round(max(1.0, float(model_raw)), 2),
                   "comparable_count": comparable_count, "comparable_tier": tier,
+                  "recent_town_flat_training_sales": recent_local_sales,
                   "comparable_price": None, "point": None, "lower": None, "upper": None,
                   "comparables": []}
         point = result["model_price"]
-        level = "97.5" if comparable_count < 5 else "95"
-        low_offset, high_offset = release["residual_offsets_sgd"][level]
+        low, high, _ = scenario_price_range(point, comparable_count, recent_local_sales, release)
         result.update({"point": round(point, 2),
-                       "lower": round(max(1.0, point + low_offset), 2),
-                       "upper": round(point + high_offset, 2)})
+                       "lower": low, "upper": high})
         if comparable_count:
             comparable_price = float(source[trainer.COMPARABLE_FEATURE])
             ranked = []
@@ -308,6 +330,9 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                            "asking_price_sgd": feature.get("asking_price_sgd"),
                            "asking_premium_discount_sgd": None, "asking_premium_discount_pct": None,
                            "minimum_comparable_count": min((s["comparable_count"] for s in scenarios), default=0),
+                           "recent_town_flat_training_sales": recent_local_counts[
+                               feature.get("town"), feature.get("inferred_flat_type")],
+                           "minimum_recent_training_sales": local_policy["minimum_training_sales"],
                            "confidence_label": "not_available", "scenarios_json": json.dumps(scenarios),
                            "valuation_note": failures.get(key, "insufficient_comparable_evidence")})
             continue
@@ -319,8 +344,11 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         delta = asking - point if asking is not None else None
         pct = delta / point * 100 if delta is not None and point else None
         minimum_comparables = min(row["comparable_count"] for row in valid)
+        recent_local_sales = min(row["recent_town_flat_training_sales"] for row in valid)
+        limited_local = recent_local_sales < local_policy["minimum_training_sales"]
         confidence = (
             "limited_comparable_evidence" if minimum_comparables < 3
+            else "limited_local_training_data" if limited_local
             else "scenario_range" if len(valid) >= 2
             else "single_scenario_low_confidence"
         )
@@ -330,6 +358,11 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         )
         if minimum_comparables < 3:
             valuation_note += " Fewer than three comparable sales support this estimate."
+        if limited_local:
+            valuation_note += (
+                f" Only {recent_local_sales} recent training sales match this town and flat type; "
+                "local evidence is limited and a wider range is used."
+            )
         output.append({**{field: feature[field] for field in ("source_site", "run_id", "listing_id")},
                        "valuation_status": "estimated", "model_id": release["model_id"],
                        "valuation_month": month, "assumption_method": "same-block history; low/middle/high observed storeys",
@@ -339,6 +372,8 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                        "asking_premium_discount_sgd": round(delta, 2) if delta is not None else None,
                        "asking_premium_discount_pct": round(pct, 2) if pct is not None else None,
                        "minimum_comparable_count": minimum_comparables,
+                       "recent_town_flat_training_sales": recent_local_sales,
+                       "minimum_recent_training_sales": local_policy["minimum_training_sales"],
                        "confidence_label": confidence, "scenarios_json": json.dumps(scenarios),
                        "valuation_note": valuation_note})
     return output

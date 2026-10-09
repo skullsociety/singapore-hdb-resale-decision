@@ -178,6 +178,9 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     baseline_release = release["model_id"] == release["comparable_method"]
     if not baseline_release and (not release.get("model_artifact") or not release.get("feature_columns")):
         raise ValueError("Model release is missing its artifact or feature schema; rerun steps 06–09")
+    local_policy = release.get("local_evidence")
+    if not local_policy:
+        raise ValueError("Model release lacks local-evidence calibration; rerun step 09")
     month = parse_month(args.valuation_month)
     flat_type = normalise(args.flat_type)
     storey_range = normalise(args.storey_range)
@@ -189,12 +192,20 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         if current_run is None or current_run[0] != release["source_build_run_id"]:
             raise ValueError("Database changed after step 09; rerun steps 04–09 before pricing a flat")
         training_end = connection.execute("SELECT MAX(transaction_month) FROM transaction_features WHERE dataset_split='train'").fetchone()[0]
+        if training_end.isoformat() != local_policy["training_end_month"]:
+            raise ValueError("Local-evidence counts are stale; rerun step 09")
         latest_sale_month = connection.execute("SELECT MAX(transaction_month) FROM resale_transactions").fetchone()[0]
         if month <= training_end:
             raise ValueError(f"Valuation month must be after the model training period ending {training_end}")
         if month_number(month) - month_number(latest_sale_month) > 12:
             raise ValueError("Transaction data is over 12 months old for the requested valuation month; refresh the project")
         block = block_record(connection, args.block, args.street)
+        recent_local_sales = connection.execute("""
+            SELECT COUNT(*) FROM transaction_features
+            WHERE dataset_split = 'train' AND town = ? AND flat_type = ?
+              AND transaction_month >= ?
+        """, [block["town"], flat_type, date.fromisoformat(local_policy["training_start_month"])]).fetchone()[0]
+        limited_local = recent_local_sales < local_policy["minimum_training_sales"]
         if midpoint > int(block["max_floor_lvl"]):
             raise ValueError("Storey range exceeds the block's recorded maximum floor")
         train_cursor = connection.execute("""
@@ -270,6 +281,11 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         warnings.append("Latest available transaction is more than three months before this valuation month.")
     if flat_type == "2 ROOM":
         warnings.append("Two-room estimates should be reviewed alongside the available comparable sales.")
+    if limited_local:
+        warnings.append(
+            f"Only {recent_local_sales} recent training sales match this town and flat type; "
+            "local evidence is limited and a wider research range is used."
+        )
     result = {
         "status": "estimate", "model_id": model_id,
         "model_name": release.get("model_name", model_id), "valuation_month": month.isoformat(),
@@ -292,25 +308,35 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
         "pilot_test_mae_sgd": release["test_mae_sgd"],
         "confidence_label": "limited_comparable_evidence" if len(candidates) < 3 else None,
         "comparable_count": len(candidates), "comparable_tier": tier,
+        "recent_town_flat_training_sales": recent_local_sales,
+        "recent_local_training_start_month": local_policy["training_start_month"],
         "comparable_sales": rank_comparables(source, candidates, baseline, block_names),
         "model_explanation": explanation,
         "warnings": warnings,
     }
     if len(candidates) < 3:
         result["warnings"].append("Fewer than three earlier comparable sales were found; this estimate has limited local sales evidence.")
-    level = "97.5" if len(candidates) < 5 else "95"
-    low_offset, high_offset = release["residual_offsets_sgd"][level]
+    level = "97.5" if limited_local or len(candidates) < 5 else "95"
+    low_offset, high_offset = (local_policy["residual_offsets_sgd"] if limited_local
+                               else release["residual_offsets_sgd"][level])
     low = round(max(1.0, min(model_price, model_price + low_offset)), 2)
     high = round(max(model_price, model_price + high_offset), 2)
     result.update({
         "price_estimate_sgd": round(model_price, 2), "lower_estimate_sgd": low, "upper_estimate_sgd": high,
         "nominal_range_coverage_pct": float(level),
-        "confidence_label": "limited_comparable_evidence" if len(candidates) < 3 else "low_wide_range" if len(candidates) < 5 else "moderate" if len(candidates) < 20 else "supported_by_comparables",
+        "confidence_label": "limited_comparable_evidence" if len(candidates) < 3 else "limited_local_training_data" if limited_local else "low_wide_range" if len(candidates) < 5 else "moderate" if len(candidates) < 20 else "supported_by_comparables",
     })
+    if limited_local:
+        result["pilot_test_observed_range_coverage_pct"] = local_policy["test_observed_coverage_pct"]
     if len(candidates) < 5:
         result["warnings"].append("Fewer than five comparables were found; a wider range is used.")
     if release["range_status"] != "pilot_tolerance_pass":
         result["warnings"].append("Historical range coverage missed its stated level; treat the bounds as exploratory.")
+    elif limited_local:
+        result["warnings"].append(
+            f"The wider range covered {local_policy['test_observed_coverage_pct']:.2f}% of "
+            "low-local-evidence test sales overall; coverage for this town may differ."
+        )
     else:
         result["warnings"].append("The range is broad; its measured coverage is an overall national backtest and may differ by town.")
     return result

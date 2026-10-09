@@ -60,6 +60,19 @@ class ListingAnalysisTests(unittest.TestCase):
                          ["01 TO 03", "07 TO 09", "16 TO 18"])
         self.assertEqual(assumptions["flat_model"], "Model A")
 
+    def test_sparse_local_sales_use_calibrated_wider_range(self):
+        release = {
+            "residual_offsets_sgd": {"95": [-50, 50], "97.5": [-80, 80]},
+            "local_evidence": {"minimum_training_sales": 100,
+                               "residual_offsets_sgd": [-120, 120]},
+        }
+        self.assertEqual(analysis.scenario_price_range(500, 20, 99, release),
+                         (380, 620, True))
+        self.assertEqual(analysis.scenario_price_range(500, 20, 100, release),
+                         (450, 550, False))
+        self.assertEqual(analysis.scenario_price_range(500, 4, 100, release),
+                         (420, 580, False))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,6 +101,7 @@ def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], bu
                    r.asking_premium_discount_sgd,
                    r.asking_premium_discount_pct,
                    r.minimum_comparable_count, r.confidence_label,
+                   v.recent_town_flat_training_sales, v.minimum_recent_training_sales,
                    r.listing_age_days, r.ranking_score, r.eligible,
                    r.ranking_notes, r.change_type, f.first_seen_utc,
                    f.last_seen_utc, v.valuation_status, v.model_id,

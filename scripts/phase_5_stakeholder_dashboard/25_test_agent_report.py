@@ -43,6 +43,14 @@ class AgentReportTests(unittest.TestCase):
         content = REPORT.build_report([listing], {}).decode("utf-8")
         self.assertIn("<dt>Category</dt><dd>Slightly expensive</dd>", content)
 
+    def test_report_shows_limited_local_training_evidence(self):
+        listing = self.listing()
+        listing["recent_town_flat_training_sales"] = 80
+        listing["valuation_note"] = "Limited local evidence; a wider range is used."
+        content = REPORT.build_report([listing], {}).decode("utf-8")
+        self.assertIn("<dt>Recent local training sales</dt><dd>80</dd>", content)
+        self.assertIn("Limited local evidence; a wider range is used.", content)
+
     def test_report_limits_comparison_to_four(self):
         with self.assertRaises(ValueError):
             REPORT.build_report([self.listing()] * 5, {})

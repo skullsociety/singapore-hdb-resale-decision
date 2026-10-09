@@ -60,6 +60,15 @@ class DashboardViewTests(unittest.TestCase):
         """).fetchone()[0]
         self.assertEqual(0, unsupported_positive)
 
+    def test_local_training_evidence_is_available_to_dashboard(self):
+        missing = self.connection.execute("""
+            SELECT COUNT(*) FROM dashboard_current_listings
+            WHERE valuation_status = 'estimated'
+              AND (recent_town_flat_training_sales IS NULL
+                   OR minimum_recent_training_sales <> 100)
+        """).fetchone()[0]
+        self.assertEqual(0, missing)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()

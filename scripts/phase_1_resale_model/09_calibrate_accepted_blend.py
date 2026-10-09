@@ -8,8 +8,8 @@ import importlib.util
 import json
 import statistics
 import sys
-from collections import defaultdict
-from datetime import datetime, timezone
+from collections import Counter, defaultdict
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -17,6 +17,18 @@ import numpy as np
 
 
 COMPARABLE_ID = "BASELINE_COMPARABLE_SALES_V1"
+MIN_RECENT_TOWN_FLAT_SALES = 100
+
+
+def recent_local_training_counts(train_rows: list[dict]) -> tuple[date, date, Counter]:
+    """Use the latest two calendar years of the fitted training split."""
+    training_end = max(row["transaction_month"] for row in train_rows)
+    training_start = date(training_end.year - 1, 1, 1)
+    counts = Counter(
+        (row["town"], row["flat_type"]) for row in train_rows
+        if row["transaction_month"] >= training_start
+    )
+    return training_start, training_end, counts
 
 
 def comparable_release_gate(
@@ -186,21 +198,62 @@ def run(root: Path) -> dict:
     ]
     if len(residuals) < 100:
         raise ValueError("Too few validation residuals for price range calibration")
+    recent_start, training_end, local_counts = recent_local_training_counts(train)
+    def low_local_evidence(row: dict) -> bool:
+        return local_counts[row["town"], row["flat_type"]] < MIN_RECENT_TOWN_FLAT_SALES
+
+    low_validation = [row for row in validation if low_local_evidence(row)]
+    if len(low_validation) < 100:
+        raise ValueError("Too few low-local-evidence validation sales to calibrate a wider range")
+    low_residuals = [
+        float(row["resale_price"]) - float(released_predictions["validation", row["transaction_id"]]["predicted_price"])
+        for row in low_validation
+    ]
+    low_offsets = bounds(low_residuals, .975, selected_method, diagnostics)
+    # The sparse-group interval must never be narrower than the usual wide interval.
+    national_wide = bounds(residuals, .975, selected_method, diagnostics)
+    low_offsets = (min(low_offsets[0], national_wide[0]), max(low_offsets[1], national_wide[1]))
+    early_low = [row for row in early if low_local_evidence(row)]
+    late_low = [row for row in late if low_local_evidence(row)]
+    if len(early_low) < 100 or len(late_low) < 100:
+        raise ValueError("Too few time-separated low-local-evidence sales to check the wider range")
+    early_low_residuals = [
+        float(row["resale_price"]) - float(released_predictions["validation", row["transaction_id"]]["predicted_price"])
+        for row in early_low
+    ]
+    early_low_offsets = bounds(early_low_residuals, .975, selected_method, diagnostics)
+    early_national_wide = bounds(early_residuals, .975, selected_method, diagnostics)
+    early_low_offsets = (min(early_low_offsets[0], early_national_wide[0]),
+                         max(early_low_offsets[1], early_national_wide[1]))
+    low_holdout_coverage = statistics.mean(
+        max(1.0, point + early_low_offsets[0]) <= float(row["resale_price"]) <= point + early_low_offsets[1]
+        for row in late_low
+        for point in [float(released_predictions["validation", row["transaction_id"]]["predicted_price"])]
+    ) * 100
     intervals = {}
     range_rows = []
     for row in test:
         transaction_id = row["transaction_id"]
         point = float(released_predictions["test", transaction_id]["predicted_price"])
         count = int(comparable["test", transaction_id]["comparable_count"])
-        level = .975 if count < 5 else .95
-        low, high = interval(point, residuals, level, selected_method, diagnostics)
-        confidence = "insufficient_comparable_evidence" if count < 3 else "low_wide_range" if count < 5 else "moderate" if count < 20 else "supported_by_comparables"
+        local_count = local_counts[row["town"], row["flat_type"]]
+        low_local = local_count < MIN_RECENT_TOWN_FLAT_SALES
+        level = .975 if low_local or count < 5 else .95
+        if low_local:
+            low = round(max(1.0, min(point, point + low_offsets[0])), 2)
+            high = round(max(point, point + low_offsets[1]), 2)
+        else:
+            low, high = interval(point, residuals, level, selected_method, diagnostics)
+        confidence = ("insufficient_comparable_evidence" if count < 3 else
+                      "limited_local_training_data" if low_local else
+                      "low_wide_range" if count < 5 else "moderate" if count < 20 else "supported_by_comparables")
         result = {
             "transaction_id": transaction_id, "model_id": released_id, "dataset_split": "test",
             "valuation_month": row["transaction_month"].isoformat(), "town": row["town"],
             "flat_type": row["flat_type"], "point_estimate": round(point, 2),
             "lower_estimate": low, "upper_estimate": high, "interval_width": round(high - low, 2),
             "nominal_coverage_pct": level * 100, "comparable_count": count,
+            "recent_town_flat_training_sales": local_count,
             "comparable_tier": comparable["test", transaction_id]["comparable_tier"],
             "confidence_label": confidence, "actual_price_backtest_only": float(row["resale_price"]),
             "interval_covered": low <= float(row["resale_price"]) <= high,
@@ -248,6 +301,8 @@ def run(root: Path) -> dict:
     mean_nominal = statistics.mean(row["nominal_coverage_pct"] for row in range_rows)
     observed = float(released_test_metric["interval_coverage_pct"])
     range_status = "pilot_tolerance_pass" if abs(observed - mean_nominal) <= 5 else "coverage_needs_review"
+    low_test = [row for row in range_rows if row["recent_town_flat_training_sales"] < MIN_RECENT_TOWN_FLAT_SALES]
+    low_test_coverage = statistics.mean(row["interval_covered"] for row in low_test) * 100 if low_test else None
     last_source_month = max(row["transaction_month"] for row in rows)
     source_run = json.loads((root / "reports/phase_1_resale_model/03_duckdb_build_summary.json").read_text(encoding="utf-8"))
     release = {
@@ -268,6 +323,18 @@ def run(root: Path) -> dict:
         "residual_offsets_sgd": {
             "95": [round(value, 2) for value in bounds(residuals, .95, selected_method, diagnostics)],
             "97.5": [round(value, 2) for value in bounds(residuals, .975, selected_method, diagnostics)],
+        },
+        "local_evidence": {
+            "minimum_training_sales": MIN_RECENT_TOWN_FLAT_SALES,
+            "training_start_month": recent_start.isoformat(),
+            "training_end_month": training_end.isoformat(),
+            "nominal_coverage_pct": 97.5,
+            "residual_offsets_sgd": [round(value, 2) for value in low_offsets],
+            "validation_sales": len(low_validation),
+            "validation_later_half_sales": len(late_low),
+            "validation_later_half_coverage_pct": round(low_holdout_coverage, 2),
+            "test_sales": len(low_test),
+            "test_observed_coverage_pct": round(low_test_coverage, 2) if low_test_coverage is not None else None,
         },
         "calibration_check": calibration_check,
         "range_status": range_status,

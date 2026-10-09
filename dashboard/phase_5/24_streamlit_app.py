@@ -209,6 +209,7 @@ def opportunity_page() -> None:
         "stakeholder_category", "town", "title", "inferred_flat_type", "floor_area_sqm",
         "asking_price_sgd", "lower_estimate_sgd", "point_estimate_sgd", "upper_estimate_sgd",
         "asking_premium_discount_pct", "minimum_comparable_count", "confidence_label",
+        "recent_town_flat_training_sales",
         "change_type", "listing_url",
     ]
     display = selected[columns].copy()
@@ -221,6 +222,7 @@ def opportunity_page() -> None:
         "point_estimate_sgd": st.column_config.NumberColumn("Estimate point", format="S$ %,.0f"),
         "upper_estimate_sgd": st.column_config.NumberColumn("Estimate high", format="S$ %,.0f"),
         "asking_premium_discount_pct": st.column_config.NumberColumn("Difference", format="%.1f%%"),
+        "recent_town_flat_training_sales": st.column_config.NumberColumn("Recent local sales"),
     })
 
 
@@ -275,12 +277,21 @@ def listing_detail_page() -> None:
     st.write(listing.get("category_reason") or "")
     if listing.get("verify_low_price"):
         st.warning("The asking price is unusually far below the research range. Verify the listing and unit details.")
+    if (listing.get("valuation_status") == "estimated"
+            and listing.get("recent_town_flat_training_sales") is not None
+            and listing.get("minimum_recent_training_sales") is not None
+            and listing["recent_town_flat_training_sales"] < listing["minimum_recent_training_sales"]):
+        st.warning(
+            f"Limited local evidence: {listing['recent_town_flat_training_sales']} recent training sales "
+            "match this town and flat type. The research price range is wider."
+        )
     st.write({
         "Address": listing.get("address"),
         "Inferred flat type": listing.get("inferred_flat_type"),
         "Floor area": listing.get("floor_area_sqm"),
         "Confidence": listing.get("confidence_label"),
         "Minimum comparable count": listing.get("minimum_comparable_count"),
+        "Recent town and flat-type training sales": listing.get("recent_town_flat_training_sales"),
         "Valuation note": listing.get("valuation_note"),
     })
     st.subheader("Nearby amenities")
