@@ -47,6 +47,22 @@ class DashboardViewTests(unittest.TestCase):
         """).fetchone()[0]
         self.assertEqual(0, duplicate_count)
 
+    def test_current_view_uses_each_listings_matched_town(self):
+        mismatched = self.connection.execute("""
+            SELECT COUNT(*)
+            FROM dashboard_current_listings d
+            JOIN listing_features f USING (source_site, run_id, listing_id)
+            WHERE d.town <> COALESCE(f.town, 'UNKNOWN')
+        """).fetchone()[0]
+        self.assertEqual(0, mismatched)
+
+        concrete_town_count = self.connection.execute("""
+            SELECT COUNT(DISTINCT town)
+            FROM dashboard_current_listings
+            WHERE town NOT IN ('ALL', 'UNKNOWN')
+        """).fetchone()[0]
+        self.assertGreater(concrete_town_count, 0)
+
     def test_categories_are_supported(self):
         categories = {row[0] for row in self.connection.execute(
             "SELECT DISTINCT stakeholder_category FROM dashboard_current_listings"

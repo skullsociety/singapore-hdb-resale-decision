@@ -91,7 +91,8 @@ def create_views(connection: duckdb.DuckDBPyConnection, metrics: list[tuple], bu
 
         connection.execute("""
             CREATE VIEW dashboard_current_listings AS
-            SELECT r.profile_id, p.profile_name, p.town,
+            SELECT r.profile_id, p.profile_name,
+                   COALESCE(f.town, 'UNKNOWN') AS town,
                    r.source_site, r.run_id, r.listing_id, r.listing_url,
                    r.title, r.address, f.block_id, f.matched_block AS block,
                    f.matched_street AS street, f.postal_code,
