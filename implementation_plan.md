@@ -380,9 +380,9 @@ The pilot can use GitHub Free plus Streamlit Community Cloud without a hosting c
 | Step | Files | Result |
 |---:|---|---|
 | 26 | `scripts/phase_6_neighbourhood_explorer/26_build_feature_explorer.py`, its PowerShell launcher, and its integrity test | Adds a focused historical-transaction table, a training-only association table, build metadata, and four stable dashboard views to the existing `data/listings.db`. |
-| 27 | `dashboard/phase_6/27_feature_explorer.py` and its Streamlit test | Adds **Neighbourhood and features** to the existing local dashboard with flat-type/year filters, summary metrics, monthly price trend, price distribution, block map, selected feature relationship, and matching transaction table. |
+| 27 | `dashboard/phase_6/27_feature_explorer.py` and its Streamlit test | Adds **Neighbourhood and features** with batched filters and DuckDB-side metrics and aggregates. Full matching data supplies the statistics; browser payloads are capped at 8,000 deterministic scatter points, 3,000 map blocks, and 500 table rows. |
 
-The 2 October 2026 build contains 19,513 Sengkang transactions from January 2017 through September 2026, covering 618 transaction-bearing blocks and five flat types. It displays 42 usable feature relationships calculated from the 15,766-row training split; validation and test prices remain excluded from feature screening. The machine-readable build receipt is `reports/phase_6_neighbourhood_explorer/26_feature_explorer_summary.json`.
+The current build contains 241,354 transactions across 26 towns from January 2017 through September 2026, covering 9,752 transaction-bearing blocks and seven flat types. It displays 42 usable feature relationships calculated from the 190,799-row training split; validation and test prices remain excluded from feature screening. The machine-readable build receipt is `reports/phase_6_neighbourhood_explorer/26_feature_explorer_summary.json`.
 
 Step 26 uses physical snapshot tables because the source transaction features live in the separate replaceable `property.duckdb`, while the local application should open only `listings.db`. Step 27 reads stable views and never writes to either database. Rebuild Step 26 after rebuilding Phase 1 data or Step 05 associations.
 

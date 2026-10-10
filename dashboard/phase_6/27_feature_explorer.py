@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import math
+from datetime import date
 
 import altair as alt
 import pandas as pd
@@ -25,6 +25,8 @@ FEATURE_LABELS = {
     "nearest_parks_m": "Distance to park (m)",
     "nearest_public_libraries_m": "Distance to public library (m)",
 }
+SCATTER_POINT_LIMIT = 8_000
+MAP_POINT_LIMIT = 3_000
 
 
 def format_money(value: float) -> str:
@@ -43,6 +45,14 @@ def padded_numeric_domain(values: pd.Series) -> list[float]:
     span = maximum - minimum
     padding = max(span * 0.04, abs(maximum) * 0.01, 1.0)
     return [minimum - padding, maximum + padding]
+
+
+def transaction_filter(flat_types: list[str], start: date, end: date) -> tuple[str, tuple]:
+    placeholders = ",".join("?" for _ in flat_types)
+    return (
+        f"flat_type IN ({placeholders}) AND transaction_month BETWEEN ? AND ?",
+        tuple(flat_types) + (start, end),
+    )
 
 
 def render(query) -> None:
@@ -64,16 +74,19 @@ def render(query) -> None:
         return
 
     coverage = query("""
-        SELECT MIN(EXTRACT(year FROM transaction_month))::INTEGER AS first_year,
-               MAX(EXTRACT(year FROM transaction_month))::INTEGER AS last_year
+        SELECT MIN(transaction_month) AS first_month,
+               MAX(transaction_month) AS last_month
         FROM dashboard_explorer_transactions
     """).iloc[0]
     flat_types = query(
         "SELECT DISTINCT flat_type FROM dashboard_explorer_transactions ORDER BY flat_type"
     )["flat_type"].dropna().tolist()
-    first_year = int(coverage["first_year"])
-    last_year = int(coverage["last_year"])
+    first_month = pd.Timestamp(coverage["first_month"]).date()
+    last_month = pd.Timestamp(coverage["last_month"]).date()
+    first_year = first_month.year
+    last_year = last_month.year
     available_years = list(range(first_year, last_year + 1))
+    recent_start = max(pd.Timestamp(first_month), pd.Timestamp(last_month) - pd.DateOffset(years=2)).date()
     with st.form("feature_explorer_filters", border=False):
         chosen_types = st.multiselect("Flat type", flat_types, default=flat_types)
         year_columns = st.columns(2)
@@ -81,42 +94,67 @@ def render(query) -> None:
         end_year = year_columns[1].selectbox(
             "To year", available_years, index=len(available_years) - 1
         )
+        label = st.selectbox("Feature", list(FEATURE_LABELS.values()))
+        chosen_chart_dates = st.date_input(
+            "Map and scatter transaction dates",
+            value=(recent_start, last_month),
+            min_value=first_month,
+            max_value=last_month,
+        )
         st.form_submit_button("Apply filters", type="primary")
     if start_year > end_year:
         st.warning("The start year must be earlier than or equal to the end year.")
         return
-    chosen_years = (start_year, end_year)
     if not chosen_types:
         st.info("Choose at least one flat type.")
         return
+    if isinstance(chosen_chart_dates, (tuple, list)) and len(chosen_chart_dates) == 2:
+        chart_start, chart_end = chosen_chart_dates
+    else:
+        chart_start = chart_end = chosen_chart_dates
+    if chart_start > chart_end:
+        st.warning("The map and scatter start date must be earlier than or equal to the end date.")
+        return
 
-    placeholders = ",".join("?" for _ in chosen_types)
-    parameters = tuple(chosen_types) + tuple(chosen_years)
-    transactions = query(
-        f"""
-        SELECT * FROM dashboard_explorer_transactions
-        WHERE flat_type IN ({placeholders})
-          AND EXTRACT(year FROM transaction_month) BETWEEN ? AND ?
-        ORDER BY transaction_month
-        """,
-        parameters,
+    summary_where, summary_parameters = transaction_filter(
+        chosen_types, date(start_year, 1, 1), date(end_year, 12, 31)
     )
-    if transactions.empty:
+    chart_where, chart_parameters = transaction_filter(chosen_types, chart_start, chart_end)
+    summary = query(
+        f"""
+        SELECT COUNT(*)::BIGINT AS transaction_count,
+               COUNT(DISTINCT block_id)::BIGINT AS block_count,
+               MEDIAN(resale_price) AS median_resale_price_sgd,
+               MEDIAN(price_per_sqm) AS median_price_per_sqm
+        FROM dashboard_explorer_transactions
+        WHERE {summary_where}
+        """,
+        summary_parameters,
+    ).iloc[0]
+    if int(summary["transaction_count"]) == 0:
         st.info("No transactions match these filters.")
         return
 
     metrics = st.columns(4)
-    metrics[0].metric("Transactions", f"{len(transactions):,}")
-    metrics[1].metric("Blocks", f"{transactions['block_id'].nunique():,}")
-    metrics[2].metric("Median price", format_money(transactions["resale_price"].median()))
-    metrics[3].metric("Median price per sqm", format_money(transactions["price_per_sqm"].median()))
+    metrics[0].metric("Transactions", f"{int(summary['transaction_count']):,}")
+    metrics[1].metric("Blocks", f"{int(summary['block_count']):,}")
+    metrics[2].metric("Median price", format_money(summary["median_resale_price_sgd"]))
+    metrics[3].metric("Median price per sqm", format_money(summary["median_price_per_sqm"]))
 
     st.subheader("Price trend")
-    monthly = (
-        transactions.groupby("transaction_month", as_index=False)
-        .agg(median_resale_price_sgd=("resale_price", "median"), transaction_count=("transaction_id", "count"))
+    monthly = query(
+        f"""
+        SELECT transaction_month AS Month,
+               MEDIAN(resale_price) AS median_resale_price_sgd,
+               COUNT(*)::BIGINT AS transaction_count
+        FROM dashboard_explorer_transactions
+        WHERE {summary_where}
+        GROUP BY transaction_month
+        ORDER BY transaction_month
+        """,
+        summary_parameters,
     )
-    monthly["Month"] = pd.to_datetime(monthly["transaction_month"])
+    monthly["Month"] = pd.to_datetime(monthly["Month"])
     trend_chart = (
         alt.Chart(monthly)
         .mark_line(point=True)
@@ -137,14 +175,26 @@ def render(query) -> None:
     with left:
         st.subheader("Price distribution")
         band_size = 100_000
-        prices = transactions["resale_price"]
-        lower = math.floor(float(prices.min()) / band_size) * band_size
-        upper = math.ceil(float(prices.max()) / band_size) * band_size + band_size
+        distribution_rows = query(
+            f"""
+            SELECT FLOOR(resale_price / {band_size})::BIGINT * {band_size} AS lower_bound,
+                   COUNT(*)::BIGINT AS Transactions
+            FROM dashboard_explorer_transactions
+            WHERE {summary_where}
+            GROUP BY lower_bound
+            ORDER BY lower_bound
+            """,
+            summary_parameters,
+        )
+        lower = int(distribution_rows["lower_bound"].min())
+        upper = int(distribution_rows["lower_bound"].max()) + band_size
         bins = list(range(lower, upper + 1, band_size))
         labels = [f"{start / 1_000:,.0f}–{end / 1_000:,.0f}" for start, end in zip(bins, bins[1:])]
-        bands = pd.cut(prices, bins=bins, labels=labels, right=False)
-        distribution = bands.value_counts(sort=False).rename_axis("Price band").reset_index(name="Transactions")
-        distribution["Price band"] = distribution["Price band"].astype(str)
+        counts = dict(zip(distribution_rows["lower_bound"].astype(int), distribution_rows["Transactions"]))
+        distribution = pd.DataFrame({
+            "Price band": labels,
+            "Transactions": [int(counts.get(start, 0)) for start in bins[:-1]],
+        })
         bars = (
             alt.Chart(distribution)
             .mark_bar()
@@ -170,39 +220,46 @@ def render(query) -> None:
         )
     with right:
         st.subheader("Blocks with registered sales")
-        transaction_dates = pd.to_datetime(transactions["transaction_month"])
-        map_minimum = transaction_dates.min().date()
-        map_maximum = transaction_dates.max().date()
-        map_default_start = max(
-            pd.Timestamp(map_minimum), pd.Timestamp(map_maximum) - pd.DateOffset(years=2)
-        ).date()
-        chosen_map_dates = st.date_input(
-            "Map transaction dates",
-            value=(map_default_start, map_maximum),
-            min_value=map_minimum,
-            max_value=map_maximum,
-            key="feature_explorer_map_dates",
+        blocks = query(
+            f"""
+            WITH filtered AS (
+                SELECT block_id, town, flat_type, COUNT(*)::BIGINT AS transaction_count
+                FROM dashboard_explorer_transactions
+                WHERE {chart_where}
+                GROUP BY block_id, town, flat_type
+            )
+            , block_points AS (
+                SELECT b.block_id, b.latitude, b.longitude,
+                       SUM(f.transaction_count)::BIGINT AS transaction_count
+                FROM filtered f
+                JOIN dashboard_explorer_blocks b USING (block_id, town, flat_type)
+                WHERE b.latitude IS NOT NULL AND b.longitude IS NOT NULL
+                GROUP BY b.block_id, b.latitude, b.longitude
+            )
+            SELECT *, COUNT(*) OVER ()::BIGINT AS total_block_count,
+                   SUM(transaction_count) OVER ()::BIGINT AS total_transaction_count
+            FROM block_points
+            ORDER BY transaction_count DESC, block_id
+            LIMIT {MAP_POINT_LIMIT}
+            """,
+            chart_parameters,
         )
-        if isinstance(chosen_map_dates, (tuple, list)) and len(chosen_map_dates) == 2:
-            map_start, map_end = chosen_map_dates
+        if blocks.empty:
+            st.info("No mapped blocks match the chart and map dates.")
         else:
-            map_start = map_end = chosen_map_dates
-        map_transactions = transactions[
-            transaction_dates.dt.date.between(map_start, map_end)
-        ]
-        blocks = (
-            map_transactions.dropna(subset=["latitude", "longitude"])
-            .groupby(["block_id", "latitude", "longitude"], as_index=False)
-            .agg(transaction_count=("transaction_id", "count"))
-        )
-        st.map(blocks, latitude="latitude", longitude="longitude", size="transaction_count")
-        st.caption(
-            f"{len(map_transactions):,} transactions from {map_start:%b %Y} to {map_end:%b %Y}; "
-            "larger points represent more registered sales."
-        )
+            st.map(blocks, latitude="latitude", longitude="longitude", size="transaction_count")
+            total_blocks = int(blocks["total_block_count"].iloc[0])
+            total_transactions = int(blocks["total_transaction_count"].iloc[0])
+            display_note = (
+                f" Showing the {len(blocks):,} most active blocks out of {total_blocks:,}."
+                if total_blocks > len(blocks) else ""
+            )
+            st.caption(
+                f"{total_transactions:,} transactions from {chart_start:%b %Y} to {chart_end:%b %Y}; "
+                f"larger points represent more registered sales.{display_note}"
+            )
 
     st.subheader("Explore one feature")
-    label = st.selectbox("Feature", list(FEATURE_LABELS.values()))
     feature = next(key for key, value in FEATURE_LABELS.items() if value == label)
     association_column = "remaining_lease_months" if feature == "remaining_lease_years" else feature
     association_rows = query(
@@ -225,8 +282,28 @@ def render(query) -> None:
             "A positive number means higher feature values tended to accompany higher prices; "
             "a negative number means they tended to accompany lower prices. It does not isolate causation."
         )
-    scatter = transactions[[feature, "resale_price", "flat_type", "transaction_month", "block_id"]].dropna()
-    feature_domain = padded_numeric_domain(scatter[feature])
+    scatter = query(
+        f"""
+        WITH filtered AS (
+            SELECT {feature}, resale_price, flat_type, transaction_month, block_id, transaction_id
+            FROM dashboard_explorer_transactions
+            WHERE {chart_where} AND {feature} IS NOT NULL
+        )
+        SELECT {feature}, resale_price, flat_type, transaction_month, block_id,
+               MIN({feature}) OVER () AS feature_min,
+               MAX({feature}) OVER () AS feature_max
+        FROM filtered
+        ORDER BY HASH(transaction_id)
+        LIMIT {SCATTER_POINT_LIMIT}
+        """,
+        chart_parameters,
+    )
+    if scatter.empty:
+        st.info("No feature values match the chart and map dates.")
+        return
+    feature_domain = padded_numeric_domain(pd.Series([
+        scatter["feature_min"].iloc[0], scatter["feature_max"].iloc[0]
+    ]))
     transaction_points = (
         alt.Chart(scatter)
         .mark_circle(opacity=0.32, size=32)
@@ -247,13 +324,30 @@ def render(query) -> None:
             ],
         )
     )
-    average_by_feature = (
-        scatter.groupby(feature, as_index=False)
-        .agg(
-            average_resale_price=("resale_price", "mean"),
-            transaction_count=("resale_price", "size"),
+    average_by_feature = query(
+        f"""
+        WITH filtered AS (
+            SELECT {feature} AS feature_value, resale_price
+            FROM dashboard_explorer_transactions
+            WHERE {chart_where} AND {feature} IS NOT NULL
+        ), bounds AS (
+            SELECT MIN(feature_value) AS minimum, MAX(feature_value) AS maximum
+            FROM filtered
+        ), binned AS (
+            SELECT feature_value, resale_price,
+                   CASE WHEN maximum = minimum THEN 0 ELSE
+                       LEAST(49, FLOOR((feature_value - minimum) / (maximum - minimum) * 50)::INTEGER)
+                   END AS feature_bin
+            FROM filtered CROSS JOIN bounds
         )
-        .sort_values(feature)
+        SELECT AVG(feature_value) AS {feature},
+               AVG(resale_price) AS average_resale_price,
+               COUNT(*)::BIGINT AS transaction_count
+        FROM binned
+        GROUP BY feature_bin
+        ORDER BY feature_bin
+        """,
+        chart_parameters,
     )
     average_line = (
         alt.Chart(average_by_feature)
@@ -278,23 +372,23 @@ def render(query) -> None:
     )
     st.altair_chart(transaction_points + average_line)
     st.caption(
-        "Faint coloured points are individual resale transactions. The orange points and connecting line show "
-        "the average resale price for each exact feature value in the selected group; the line is not a price forecast."
+        f"Faint coloured points are a deterministic display sample of up to {SCATTER_POINT_LIMIT:,} "
+        f"transactions from {chart_start:%b %Y} to {chart_end:%b %Y}. The orange line uses all matching "
+        "transactions, grouped into up to 50 feature bands; it is not a price forecast."
     )
     if feature == "floor_area_sqm":
         st.subheader("Average cost per sqm by flat type")
-        cost_per_sqm = (
-            transactions.groupby("flat_type", as_index=False)
-            .agg(
-                average_cost_per_sqm=("price_per_sqm", "mean"),
-                transaction_count=("transaction_id", "count"),
-            )
-            .sort_values("flat_type")
-            .rename(columns={
-                "flat_type": "Flat type",
-                "average_cost_per_sqm": "Average cost per sqm",
-                "transaction_count": "Transactions",
-            })
+        cost_per_sqm = query(
+            f"""
+            SELECT flat_type AS "Flat type",
+                   AVG(price_per_sqm) AS "Average cost per sqm",
+                   COUNT(*)::BIGINT AS "Transactions"
+            FROM dashboard_explorer_transactions
+            WHERE {summary_where}
+            GROUP BY flat_type
+            ORDER BY flat_type
+            """,
+            summary_parameters,
         )
         st.dataframe(
             cost_per_sqm,
@@ -310,7 +404,17 @@ def render(query) -> None:
         )
 
     st.subheader("Selected comparison group")
-    display = transactions.sort_values("transaction_month", ascending=False).head(500)
+    display = query(
+        f"""
+        SELECT transaction_month, block_id, flat_type, flat_model, storey_range,
+               floor_area_sqm, remaining_lease_years, resale_price, price_per_sqm
+        FROM dashboard_explorer_transactions
+        WHERE {summary_where}
+        ORDER BY transaction_month DESC, transaction_id
+        LIMIT 500
+        """,
+        summary_parameters,
+    )
     display = display.assign(
         transaction_month=pd.to_datetime(display["transaction_month"]).dt.strftime("%b %Y")
     )
@@ -339,5 +443,5 @@ def render(query) -> None:
             "Remaining lease (years)": st.column_config.NumberColumn(format="%.1f"),
         },
     )
-    if len(transactions) > 500:
+    if int(summary["transaction_count"]) > 500:
         st.caption("The table shows the latest 500 matching transactions; charts use the full selection.")

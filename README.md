@@ -307,9 +307,9 @@ Disconnect `listings.db` in DBeaver before running the write step:
 .\scripts\phase_5_stakeholder_dashboard\24_run_dashboard.ps1
 ```
 
-Open [http://127.0.0.1:8501](http://127.0.0.1:8501) and choose **Neighbourhood and features**. Step 27 lets the user filter by flat type and transaction years. It shows transaction count, block count, median price, median price per square metre, a monthly trend, price distribution, transaction-block map, one selected feature relationship, and the latest 500 matching transactions.
+Open [http://127.0.0.1:8501](http://127.0.0.1:8501) and choose **Neighbourhood and features**. Step 27 lets the user filter by flat type, transaction years, feature, and a recent chart/map period through one Apply form. Summary metrics, trends, distributions, feature-band averages and price-per-square-metre comparisons are calculated over all matching transactions in DuckDB. To keep the browser responsive, the relationship chart displays a deterministic sample of at most 8,000 transactions, the map displays at most the 3,000 most active matching blocks, and the transaction table displays the latest 500 rows. Query results are cached for 60 seconds with a bounded cache.
 
-The current explorer covers Sengkang from January 2017 through September 2026: 19,513 transactions across 618 transaction-bearing blocks and five flat types. Its 42 displayed feature relationships were calculated from 15,766 training rows only. Validation and test prices were excluded from feature screening.
+The current explorer covers 26 towns from January 2017 through September 2026: 241,354 transactions across 9,752 transaction-bearing blocks and seven flat types. Its 42 displayed feature relationships were calculated from 190,799 training rows only. Validation and test prices were excluded from feature screening.
 
 The explorer deliberately describes **associations**. A positive or negative correlation does not prove that a school, station, park, lease, floor, or another feature caused the price difference. Flat type, time, location, and overlapping characteristics can produce the observed relationship. Current amenity locations may also differ from those available on an older transaction date.
 

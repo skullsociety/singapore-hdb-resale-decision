@@ -31,16 +31,19 @@ class FeatureExplorerDataTests(unittest.TestCase):
         self.assertTrue(EXPECTED_VIEWS <= views)
 
     def test_transactions_are_unique_and_valid(self):
-        total, unique, invalid = self.connection.execute("""
+        total, unique, invalid, mapped, partial_coordinates = self.connection.execute("""
             SELECT COUNT(*), COUNT(DISTINCT transaction_id),
                    COUNT(*) FILTER (
-                       WHERE resale_price <= 0 OR floor_area_sqm <= 0
-                          OR latitude IS NULL OR longitude IS NULL)
+                       WHERE resale_price <= 0 OR floor_area_sqm <= 0),
+                   COUNT(*) FILTER (WHERE latitude IS NOT NULL AND longitude IS NOT NULL),
+                   COUNT(*) FILTER (WHERE (latitude IS NULL) <> (longitude IS NULL))
             FROM dashboard_explorer_transactions
         """).fetchone()
         self.assertGreater(total, 0)
         self.assertEqual(total, unique)
         self.assertEqual(0, invalid)
+        self.assertEqual(0, partial_coordinates)
+        self.assertGreaterEqual(mapped / total, 0.98)
 
     def test_associations_use_training_rows_only(self):
         analysed_counts = {row[0] for row in self.connection.execute(

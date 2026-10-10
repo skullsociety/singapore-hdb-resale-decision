@@ -16,7 +16,7 @@ class FeatureExplorerDashboardTests(unittest.TestCase):
         self.assertEqual([], list(app.exception))
         self.assertEqual("Neighbourhood and feature explorer", app.header[0].value)
         self.assertEqual(["From year", "To year"], [item.label for item in app.selectbox[:2]])
-        self.assertEqual("Map transaction dates", app.date_input[0].label)
+        self.assertEqual("Map and scatter transaction dates", app.date_input[0].label)
         self.assertIn(
             "Selected comparison group",
             [element.value for element in app.subheader],
@@ -25,6 +25,11 @@ class FeatureExplorerDashboardTests(unittest.TestCase):
             "Average cost per sqm by flat type",
             [element.value for element in app.subheader],
         )
+        self.assertTrue(any(
+            "deterministic display sample of up to 8,000" in element.value
+            for element in app.caption
+        ))
+        self.assertEqual(500, len(app.dataframe[-1].value))
 
 
 if __name__ == "__main__":

@@ -69,7 +69,7 @@ def load_decision_planner_module():
 DECISION_PLANNER = load_decision_planner_module()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60, max_entries=128, show_spinner=False)
 def query(sql: str, parameters: tuple = ()):
     with duckdb.connect(str(DATABASE), read_only=True) as connection:
         return connection.execute(sql, list(parameters)).fetchdf()
