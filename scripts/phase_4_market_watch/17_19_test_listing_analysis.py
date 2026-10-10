@@ -59,6 +59,32 @@ class ListingAnalysisTests(unittest.TestCase):
         self.assertEqual([row["storey_range"] for row in scenarios],
                          ["01 TO 03", "07 TO 09", "16 TO 18"])
         self.assertEqual(assumptions["flat_model"], "Model A")
+        indexed = analysis.TransactionHistory(rows)
+        self.assertEqual(
+            analysis.infer_flat_type(93.0, "B1", "SENGKANG", indexed),
+            (flat_type, method, gap),
+        )
+        self.assertEqual(
+            analysis.scenario_inputs(self.block, flat_type, 93.0, indexed, date(2026, 10, 1)),
+            (scenarios, assumptions),
+        )
+        self.assertEqual(
+            analysis.infer_flat_type(93.0, "OTHER", "SENGKANG", indexed),
+            analysis.infer_flat_type(93.0, "OTHER", "SENGKANG", rows),
+        )
+
+    def test_duplicate_advertisements_share_only_identical_valuation_inputs(self):
+        source = {
+            "transaction_id": "ad-1:middle", "block_id": "B1",
+            "transaction_month": date(2026, 10, 1), "town": "SENGKANG",
+            "flat_type": "4 ROOM", "flat_model": "Model A",
+            "floor_area_sqm": 93.0, "storey_range": "07 TO 09",
+            "lease_commence_year": 2001,
+        }
+        self.assertEqual(analysis.valuation_input_key(source),
+                         analysis.valuation_input_key({**source, "transaction_id": "ad-2:middle"}))
+        self.assertNotEqual(analysis.valuation_input_key(source),
+                            analysis.valuation_input_key({**source, "floor_area_sqm": 94.0}))
 
     def test_sparse_local_sales_use_calibrated_wider_range(self):
         release = {

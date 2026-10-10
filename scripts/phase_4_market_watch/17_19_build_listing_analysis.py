@@ -124,19 +124,57 @@ def match_listing(listing: dict, exact: dict, by_block: dict) -> dict:
             "matched_block": None, "matched_street": None, "review_note": note}
 
 
+class TransactionHistory:
+    """Share transaction lookups across listings in one processing run."""
+
+    def __init__(self, transactions: list[dict]):
+        self.transactions = transactions
+        self.by_block = defaultdict(list)
+        self.by_town = defaultdict(list)
+        self.by_block_type = defaultdict(list)
+        self.area_medians = {}
+        self.scenarios = {}
+        for row in transactions:
+            self.by_block[row["block_id"]].append(row)
+            self.by_town[row["town"]].append(row)
+            self.by_block_type[row["block_id"], row["flat_type"]].append(row)
+
+    def median_areas(self, scope: str, value: str | None) -> dict[str, float]:
+        key = (scope, value)
+        if key not in self.area_medians:
+            rows = (self.by_block.get(value, []) if scope == "block" else
+                    self.by_town.get(value, []) if scope == "town" else self.transactions)
+            grouped = defaultdict(list)
+            for row in rows:
+                grouped[row["flat_type"]].append(float(row["floor_area_sqm"]))
+            self.area_medians[key] = {
+                flat_type: float(np.median(areas)) for flat_type, areas in grouped.items()
+            }
+        return self.area_medians[key]
+
+
 def infer_flat_type(area: float | None, block_id: str, town: str | None,
-                    transactions: list[dict]) -> tuple[str | None, str, float | None]:
+                    transactions: list[dict] | TransactionHistory) -> tuple[str | None, str, float | None]:
     if not area:
         return None, "missing_floor_area", None
-    same_block = [row for row in transactions if row["block_id"] == block_id]
-    same_town = [row for row in transactions if town and row["town"] == town]
-    pool = same_block or same_town or transactions
-    grouped = defaultdict(list)
-    for row in pool:
-        grouped[row["flat_type"]].append(float(row["floor_area_sqm"]))
+    if isinstance(transactions, TransactionHistory):
+        if transactions.by_block.get(block_id):
+            scope, scope_value = "block", block_id
+        elif town and transactions.by_town.get(town):
+            scope, scope_value = "town", town
+        else:
+            scope, scope_value = "all", None
+        medians = transactions.median_areas(scope, scope_value)
+    else:
+        same_block = [row for row in transactions if row["block_id"] == block_id]
+        same_town = [row for row in transactions if town and row["town"] == town]
+        scope = "block" if same_block else "town" if same_town else "all"
+        grouped = defaultdict(list)
+        for row in same_block or same_town or transactions:
+            grouped[row["flat_type"]].append(float(row["floor_area_sqm"]))
+        medians = {flat_type: float(np.median(values)) for flat_type, values in grouped.items()}
     choices = []
-    for flat_type, values in grouped.items():
-        median = float(np.median(values))
+    for flat_type, median in medians.items():
         gap = abs(area - median)
         choices.append((gap, flat_type, median))
     if not choices:
@@ -145,15 +183,24 @@ def infer_flat_type(area: float | None, block_id: str, town: str | None,
     tolerance = max(8.0, median * 0.12)
     if gap > tolerance:
         return None, "area_outside_observed_types", gap
-    method = "same_block_area" if same_block else "same_town_area" if same_town else "national_area"
+    method = {"block": "same_block_area", "town": "same_town_area", "all": "national_area"}[scope]
     return flat_type, method, gap
 
 
-def scenario_inputs(block: dict, flat_type: str, area: float, transactions: list[dict], month: date) -> tuple[list[dict], dict]:
-    history = [row for row in transactions if row["block_id"] == block["block_id"]
+def scenario_inputs(block: dict, flat_type: str, area: float,
+                    transactions: list[dict] | TransactionHistory, month: date) -> tuple[list[dict], dict]:
+    cache_key = (block["block_id"], flat_type, month)
+    if isinstance(transactions, TransactionHistory) and cache_key in transactions.scenarios:
+        return transactions.scenarios[cache_key]
+    rows = (transactions.by_block_type.get((block["block_id"], flat_type), [])
+            if isinstance(transactions, TransactionHistory) else transactions)
+    history = [row for row in rows if row["block_id"] == block["block_id"]
                and row["flat_type"] == flat_type and row["transaction_month"] < month]
     if not history:
-        return [], {"reason": "no_same_block_flat_type_history"}
+        result = ([], {"reason": "no_same_block_flat_type_history"})
+        if isinstance(transactions, TransactionHistory):
+            transactions.scenarios[cache_key] = result
+        return result
     flat_model = Counter(row["flat_model"] for row in history if row["flat_model"]).most_common(1)[0][0]
     lease_year = Counter(int(row["lease_commence_year"]) for row in history
                          if row["lease_commence_year"]).most_common(1)[0][0]
@@ -164,14 +211,20 @@ def scenario_inputs(block: dict, flat_type: str, area: float, transactions: list
             ranges[row["storey_range"]] = midpoint
     ordered = sorted(ranges.items(), key=lambda item: item[1])
     if not ordered:
-        return [], {"reason": "no_valid_storey_history"}
+        result = ([], {"reason": "no_valid_storey_history"})
+        if isinstance(transactions, TransactionHistory):
+            transactions.scenarios[cache_key] = result
+        return result
     indices = sorted({0, len(ordered) // 2, len(ordered) - 1})
     scenarios = [{"scenario": ("low", "middle", "high")[position],
                   "storey_range": ordered[index][0], "storey_midpoint": ordered[index][1],
                   "flat_model": flat_model, "lease_commence_year": lease_year}
                  for position, index in enumerate(indices)]
-    return scenarios, {"flat_model": flat_model, "lease_commence_year": lease_year,
-                       "scenario_basis": "observed same-block flat-type transactions"}
+    result = (scenarios, {"flat_model": flat_model, "lease_commence_year": lease_year,
+                          "scenario_basis": "observed same-block flat-type transactions"})
+    if isinstance(transactions, TransactionHistory):
+        transactions.scenarios[cache_key] = result
+    return result
 
 
 def scenario_price_range(point: float, comparable_count: int, recent_local_sales: int,
@@ -185,7 +238,16 @@ def scenario_price_range(point: float, comparable_count: int, recent_local_sales
             round(point + high_offset, 2), limited_local)
 
 
-def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transactions: list[dict], metadata: dict) -> list[dict]:
+def valuation_input_key(source: dict) -> tuple:
+    """Exclude the advertisement ID; these inputs determine its scenario price."""
+    return tuple(source[field] for field in (
+        "block_id", "transaction_month", "town", "flat_type", "flat_model",
+        "floor_area_sqm", "storey_range", "lease_commence_year",
+    ))
+
+
+def valuation_rows(root: Path, features: list[dict], block_lookup: dict,
+                   transactions: list[dict] | TransactionHistory, metadata: dict) -> list[dict]:
     phase1 = root / "scripts/phase_1_resale_model"
     trainer = load_module(phase1 / "06_train_resale_models.py", "phase4_models")
     baseline = load_module(phase1 / "04_build_baselines.py", "phase4_baseline")
@@ -201,11 +263,12 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
     local_policy = release.get("local_evidence")
     if not local_policy:
         raise ValueError("Model release lacks local-evidence calibration; rerun Step 09")
-    training_end = max(row["transaction_month"] for row in transactions if row["dataset_split"] == "train")
+    transaction_rows = transactions.transactions if isinstance(transactions, TransactionHistory) else transactions
+    training_end = max(row["transaction_month"] for row in transaction_rows if row["dataset_split"] == "train")
     if training_end.isoformat() != local_policy["training_end_month"]:
         raise ValueError("Local-evidence counts are stale; rerun Step 09")
     recent_local_counts = Counter(
-        (row["town"], row["flat_type"]) for row in transactions
+        (row["town"], row["flat_type"]) for row in transaction_rows
         if row["dataset_split"] == "train"
         and row["transaction_month"] >= date.fromisoformat(local_policy["training_start_month"])
     )
@@ -216,7 +279,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
         artifact_path = Path(release["model_artifact"])
         if not artifact_path.is_absolute():
             artifact_path = root / artifact_path
-    flat_types = sorted({row["flat_type"] for row in transactions if row["dataset_split"] == "train"})
+    flat_types = sorted({row["flat_type"] for row in transaction_rows if row["dataset_split"] == "train"})
     block_names = {row["block_id"]: (row["block"], row["street"]) for row in block_lookup.values()}
     prepared = []
     failures = {}
@@ -248,28 +311,33 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                 **block,
             }
             prepared.append((feature, scenario, assumptions, source))
-    sales = [row for row in transactions if row["transaction_month"] < month]
+    sales = [row for row in transaction_rows if row["transaction_month"] < month]
     history = baseline.ComparableHistory()
     history.add(sales)
     comparable_by_scenario = {}
-    supported = []
+    shared_inputs = defaultdict(list)
     for item in prepared:
+        shared_inputs[valuation_input_key(item[3])].append(item)
+    supported = []
+    for key, matching_items in shared_inputs.items():
+        item = matching_items[0]
         source = item[3]
         candidates, tier = baseline.select_comparables(source, history)
         if not candidates:
-            failures[item[0]["listing_key"]] = "no_earlier_comparable_sales"
+            for feature, _, _, _ in matching_items:
+                failures[feature["listing_key"]] = "no_earlier_comparable_sales"
             continue
         source[trainer.COMPARABLE_FEATURE] = float(baseline.comparable_price_prediction(
             release.get("comparable_method", "BASELINE_COMPARABLE_SALES_V1"), month, candidates,
         )[0])
-        comparable_by_scenario[source["transaction_id"]] = (candidates, tier)
-        supported.append(item)
+        comparable_by_scenario[key] = (candidates, tier)
+        supported.append((key, item))
     prepared = supported
     if prepared:
         if baseline_release:
-            model_prices = [item[3][trainer.COMPARABLE_FEATURE] for item in prepared]
+            model_prices = [item[3][trainer.COMPARABLE_FEATURE] for _, item in prepared]
         else:
-            names, vectors = trainer.baseline_aware_features([item[3] for item in prepared], flat_types)
+            names, vectors = trainer.baseline_aware_features([item[3] for _, item in prepared], flat_types)
             if names != release["feature_columns"]:
                 raise ValueError("Feature schema differs from the released model; rerun Phase 1 steps 06–07 and 09")
             model_prices = trainer.predict_with_artifact(
@@ -278,8 +346,8 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
     else:
         model_prices = []
     scenarios_by_listing = defaultdict(list)
-    for (feature, scenario, assumptions, source), model_raw in zip(prepared, model_prices):
-        candidates, tier = comparable_by_scenario[source["transaction_id"]]
+    for (key, (feature, scenario, assumptions, source)), model_raw in zip(prepared, model_prices):
+        candidates, tier = comparable_by_scenario[key]
         comparable_count = len(candidates)
         recent_local_sales = recent_local_counts[source["town"], source["flat_type"]]
         result = {"scenario": scenario["scenario"], "storey_range": scenario["storey_range"],
@@ -315,7 +383,8 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict, transac
                                   "distance_m": round(distance, 1)}
                                  for _, sale, distance in ranked[:5]],
             })
-        scenarios_by_listing[feature["listing_key"]].append(result)
+        for matching_feature, _, _, _ in shared_inputs[key]:
+            scenarios_by_listing[matching_feature["listing_key"]].append(result)
     output = []
     for feature in features:
         key = feature["listing_key"]
@@ -438,6 +507,7 @@ def build(root: Path) -> dict:
     if not listing_db.is_file() or not property_db.is_file():
         raise ValueError("Both data/listings.db and data/property.duckdb are required")
     exact, by_block, transactions, metadata = property_reference(property_db)
+    transaction_history = TransactionHistory(transactions)
     block_lookup = {row["block_id"]: row for rows in exact.values() for row in rows}
     with duckdb.connect(str(listing_db)) as con:
         runs = latest_complete_runs(con)
@@ -452,7 +522,7 @@ def build(root: Path) -> dict:
                             "listing_id": listing["listing_id"], **match})
             block = block_lookup.get(match["block_id"])
             inferred_type, type_method, area_gap = infer_flat_type(
-                listing.get("floor_area_sqm"), match["block_id"], block.get("town"), transactions
+                listing.get("floor_area_sqm"), match["block_id"], block.get("town"), transaction_history
             ) if block else (None, "unmatched_block", None)
             feature = {
                 "source_site": listing["source_site"], "run_id": listing["run_id"],
@@ -468,7 +538,7 @@ def build(root: Path) -> dict:
                 feature.update({key: value for key, value in block.items() if key not in feature})
             feature["listing_key"] = f'{listing["source_site"]}:{listing["run_id"]}:{listing["listing_id"]}'
             features.append(feature)
-        valuations = valuation_rows(root, features, block_lookup, transactions, metadata)
+        valuations = valuation_rows(root, features, block_lookup, transaction_history, metadata)
         built_at = datetime.now(timezone.utc).isoformat()
         create_tables(con, matches, features, valuations, built_at)
     counts = {
