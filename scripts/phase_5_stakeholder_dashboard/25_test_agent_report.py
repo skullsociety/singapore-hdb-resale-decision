@@ -51,6 +51,16 @@ class AgentReportTests(unittest.TestCase):
         self.assertIn("<dt>Recent local training sales</dt><dd>80</dd>", content)
         self.assertIn("Limited local evidence; a wider range is used.", content)
 
+    def test_large_model_comparable_gap_is_flagged_without_changing_price(self):
+        listing = self.listing()
+        listing["point_estimate_sgd"] = 780000
+        listing["scenarios_json"] = json.dumps([
+            {"comparable_price": 650000}, {"comparable_price": 660000},
+        ])
+        content = REPORT.build_report([listing], {}).decode("utf-8")
+        self.assertIn("Model estimate and selected comparable-sale price differ", content)
+        self.assertIn("<dt>Point estimate</dt><dd>S$780,000</dd>", content)
+
     def test_report_limits_comparison_to_four(self):
         with self.assertRaises(ValueError):
             REPORT.build_report([self.listing()] * 5, {})

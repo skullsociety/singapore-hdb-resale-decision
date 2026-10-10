@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import statistics
 from datetime import datetime
 from typing import Any
 
@@ -21,6 +22,28 @@ CATEGORY_LABELS = {
 
 def category_label(value: str | None) -> str:
     return CATEGORY_LABELS.get(value, str(value or "").replace("_", " ").capitalize())
+
+
+def model_comparable_disagreement(listing: dict, threshold_pct: float = 15.0) -> str | None:
+    """Describe a large model/comparable gap without changing the estimate."""
+    try:
+        scenarios = json.loads(listing.get("scenarios_json") or "[]")
+        comparable_prices = [
+            float(row["comparable_price"]) for row in scenarios
+            if row.get("comparable_price") is not None
+        ]
+        point = float(listing["point_estimate_sgd"])
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+    if not comparable_prices:
+        return None
+    comparable = statistics.median(comparable_prices)
+    if comparable <= 0 or abs(point / comparable - 1) * 100 < threshold_pct:
+        return None
+    return (
+        f"Model estimate and selected comparable-sale price differ by at least {threshold_pct:g}%. "
+        "Review the matched sales, lease, floor, and unit details before relying on this estimate."
+    )
 
 
 def money(value: Any) -> str:
@@ -79,6 +102,9 @@ def build_report(
         listing_id = str(listing["listing_id"])
         comparison_key = listing_key(listing)
         warning = " Verify the unusually low asking price and listing details." if listing.get("verify_low_price") else ""
+        disagreement = model_comparable_disagreement(listing)
+        if disagreement:
+            warning += " " + disagreement
         cards.append(f"""
         <section class="listing">
           <h2>{html.escape(listing.get('title') or listing_id)}</h2>

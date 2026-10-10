@@ -261,6 +261,17 @@ def listing_detail_page() -> None:
         return
     label = st.selectbox("Choose a listing", list(choices))
     listing = choices[label]
+    matching_ads = [
+        row for row in all_choices.values()
+        if row.get("block_id") == listing.get("block_id")
+        and row.get("floor_area_sqm") == listing.get("floor_area_sqm")
+        and row.get("asking_price_sgd") == listing.get("asking_price_sgd")
+    ] if listing.get("block_id") else []
+    if len(matching_ads) > 1:
+        st.info(
+            f"{len(matching_ads)} advertisements share this block, floor area, and asking price. "
+            "They may describe the same unit or different units; verify the exact unit with the agents."
+        )
     if listing.get("listing_url"):
         source_name = "PropertyGuru" if listing.get("source_site") == "propertyguru" else "original"
         st.link_button(f"Open {source_name} listing", listing["listing_url"])
@@ -279,6 +290,9 @@ def listing_detail_page() -> None:
     st.write(listing.get("category_reason") or "")
     if listing.get("verify_low_price"):
         st.warning("The asking price is unusually far below the research range. Verify the listing and unit details.")
+    disagreement = REPORT.model_comparable_disagreement(listing)
+    if disagreement:
+        st.warning(disagreement)
     if (listing.get("valuation_status") == "estimated"
             and listing.get("recent_town_flat_training_sales") is not None
             and listing.get("minimum_recent_training_sales") is not None

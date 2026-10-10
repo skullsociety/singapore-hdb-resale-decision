@@ -49,6 +49,7 @@ MODEL_DEFINITIONS = {
 }
 LOOKBACK_MONTHS = 24
 RECENCY_HALF_LIFE_MONTHS = 6
+LEASE_COMMENCE_TOLERANCE_YEARS = 3
 COMPARABLE_MODEL_IDS = (
     "BASELINE_COMPARABLE_SALES_V1",
     "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1",
@@ -263,9 +264,20 @@ def select_comparables(
             [record for record in recent if similar(record, area=20, storey=9)],
         ),
     ]
+    target_lease = target.get("lease_commence_year")
+    if target_lease is not None:
+        for tier, minimum_count, records in tiers:
+            lease_matched = [
+                record for record in records
+                if record.get("lease_commence_year") is not None
+                and abs(int(record["lease_commence_year"]) - int(target_lease)) <= LEASE_COMMENCE_TOLERANCE_YEARS
+            ]
+            if len(lease_matched) >= minimum_count:
+                return lease_matched, f"{tier}_similar_lease"
+    # Preserve coverage for sparse groups, but expose the relaxed tier in reports.
     for tier, minimum_count, records in tiers:
         if len(records) >= minimum_count:
-            return records, tier
+            return records, f"{tier}_lease_relaxed"
     fallback = recent_flat_type_candidates(target, history)
     return fallback, "town_flat_type_fallback"
 
@@ -273,7 +285,7 @@ def select_comparables(
 def load_records(connection: duckdb.DuckDBPyConnection) -> list[dict]:
     columns = (
         "transaction_id, block_id, transaction_month, dataset_split, town, flat_type, flat_model, "
-        "floor_area_sqm, storey_midpoint, latitude, longitude, resale_price"
+        "floor_area_sqm, storey_midpoint, lease_commence_year, latitude, longitude, resale_price"
     )
     cursor = connection.execute(f"SELECT {columns} FROM transaction_features ORDER BY transaction_month, transaction_id")
     names = [description[0] for description in cursor.description]
