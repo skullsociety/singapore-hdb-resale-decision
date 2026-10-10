@@ -246,8 +246,35 @@ def valuation_input_key(source: dict) -> tuple:
     ))
 
 
+def reusable_previous_valuation(feature: dict, previous_feature: dict | None,
+                                previous_valuation: dict | None, model_id: str,
+                                month: date) -> dict | None:
+    """Reuse a same-month result when every valuation input is unchanged."""
+    if not previous_feature or not previous_valuation:
+        return None
+    if previous_valuation.get("model_id") != model_id or previous_valuation.get("valuation_month") != month:
+        return None
+    for field in ("match_status", "block_id", "inferred_flat_type", "floor_area_sqm"):
+        if previous_feature.get(field) != feature.get(field):
+            return None
+    reused = {key: value for key, value in previous_valuation.items() if key != "built_at_utc"}
+    reused.update({field: feature[field] for field in ("source_site", "run_id", "listing_id")})
+    asking = feature.get("asking_price_sgd")
+    point = reused.get("point_estimate_sgd")
+    delta = asking - point if asking is not None and point is not None else None
+    reused.update({
+        "asking_price_sgd": asking,
+        "asking_premium_discount_sgd": round(delta, 2) if delta is not None else None,
+        "asking_premium_discount_pct": round(delta / point * 100, 2) if delta is not None and point else None,
+    })
+    return reused
+
+
 def valuation_rows(root: Path, features: list[dict], block_lookup: dict,
-                   transactions: list[dict] | TransactionHistory, metadata: dict) -> list[dict]:
+                   transactions: list[dict] | TransactionHistory, metadata: dict,
+                   previous_features: dict | None = None,
+                   previous_valuations: dict | None = None,
+                   previous_source_build_run_id: str | None = None) -> tuple[list[dict], int]:
     phase1 = root / "scripts/phase_1_resale_model"
     trainer = load_module(phase1 / "06_train_resale_models.py", "phase4_models")
     baseline = load_module(phase1 / "04_build_baselines.py", "phase4_baseline")
@@ -281,9 +308,24 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict,
             artifact_path = root / artifact_path
     flat_types = sorted({row["flat_type"] for row in transaction_rows if row["dataset_split"] == "train"})
     block_names = {row["block_id"]: (row["block"], row["street"]) for row in block_lookup.values()}
+    previous_features = previous_features or {}
+    previous_valuations = previous_valuations or {}
+    reuse_allowed = previous_source_build_run_id == metadata["pipeline_run_id"]
+    reused_outputs = {}
+    if reuse_allowed:
+        for feature in features:
+            previous_key = (feature["source_site"], feature["listing_id"])
+            reused = reusable_previous_valuation(
+                feature, previous_features.get(previous_key), previous_valuations.get(previous_key),
+                release["model_id"], month,
+            )
+            if reused:
+                reused_outputs[feature["listing_key"]] = reused
     prepared = []
     failures = {}
     for feature in features:
+        if feature["listing_key"] in reused_outputs:
+            continue
         if feature["match_status"] != "matched" or not feature.get("inferred_flat_type"):
             failures[feature["listing_key"]] = "missing_matched_block_or_flat_type"
             continue
@@ -388,6 +430,9 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict,
     output = []
     for feature in features:
         key = feature["listing_key"]
+        if key in reused_outputs:
+            output.append(reused_outputs[key])
+            continue
         scenarios = scenarios_by_listing.get(key, [])
         valid = [row for row in scenarios if row["point"] is not None]
         if not valid:
@@ -445,7 +490,7 @@ def valuation_rows(root: Path, features: list[dict], block_lookup: dict,
                        "minimum_recent_training_sales": local_policy["minimum_training_sales"],
                        "confidence_label": confidence, "scenarios_json": json.dumps(scenarios),
                        "valuation_note": valuation_note})
-    return output
+    return output, len(reused_outputs)
 
 
 def create_tables(connection, matches: list[dict], features: list[dict], valuations: list[dict], built_at: str) -> None:
@@ -509,7 +554,21 @@ def build(root: Path) -> dict:
     exact, by_block, transactions, metadata = property_reference(property_db)
     transaction_history = TransactionHistory(transactions)
     block_lookup = {row["block_id"]: row for rows in exact.values() for row in rows}
+    report = root / "reports" / PHASE / "19_listing_analysis_summary.json"
+    previous_summary = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
     with duckdb.connect(str(listing_db)) as con:
+        available_tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
+        previous_features = {}
+        previous_valuations = {}
+        if {"listing_features", "listing_valuations"} <= available_tables:
+            previous_features = {
+                (row["source_site"], row["listing_id"]): row
+                for row in read_rows(con, "SELECT * FROM listing_features")
+            }
+            previous_valuations = {
+                (row["source_site"], row["listing_id"]): row
+                for row in read_rows(con, "SELECT * FROM listing_valuations")
+            }
         runs = latest_complete_runs(con)
         clauses = " OR ".join("(source_site = ? AND run_id = ?)" for _ in runs)
         parameters = [value for pair in runs for value in pair]
@@ -538,11 +597,16 @@ def build(root: Path) -> dict:
                 feature.update({key: value for key, value in block.items() if key not in feature})
             feature["listing_key"] = f'{listing["source_site"]}:{listing["run_id"]}:{listing["listing_id"]}'
             features.append(feature)
-        valuations = valuation_rows(root, features, block_lookup, transaction_history, metadata)
+        valuations, reused_valuations = valuation_rows(
+            root, features, block_lookup, transaction_history, metadata,
+            previous_features, previous_valuations,
+            previous_summary.get("source_property_pipeline_run_id"),
+        )
         built_at = datetime.now(timezone.utc).isoformat()
         create_tables(con, matches, features, valuations, built_at)
     counts = {
         "listings_in_latest_complete_runs": len(listings),
+        "valuations_reused_from_previous_snapshot": reused_valuations,
         "block_matches": dict(Counter(row["match_status"] for row in matches)),
         "flat_type_inference": dict(Counter(row["flat_type_inference_method"] for row in features)),
         "valuations": dict(Counter(row["valuation_status"] for row in valuations)),
@@ -559,7 +623,6 @@ def build(root: Path) -> dict:
                    "Unmatched listings and listings without adequate same-block history are not valued.",
                    "These are research estimates, not official HDB or professional valuations.",
                ]}
-    report = root / "reports" / PHASE / "19_listing_analysis_summary.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     temporary = report.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

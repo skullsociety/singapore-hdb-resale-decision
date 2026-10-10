@@ -131,7 +131,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/17_propertyguru_chrome_extension/15_test_listing_sites.js` | Tests listing-page recognition and parsing. |
 | `scripts/17_propertyguru_chrome_extension/15_test_collector_recovery.js` | Tests collection recovery after a reload. |
 | `scripts/phase_4_market_watch/16_import_legacy_propertyguru.py` | One-time import of an older saved run into DuckDB. |
-| `scripts/phase_4_market_watch/17_19_build_listing_analysis.py` | Performs Steps 17–19: matches listings to blocks, adds features, and estimates prices with a wider calibrated range for sparse local training groups; shares transaction lookups and identical valuation scenarios across listings. |
+| `scripts/phase_4_market_watch/17_19_build_listing_analysis.py` | Performs Steps 17–19: matches listings to blocks, adds features, and estimates prices with a wider calibrated range for sparse local training groups; shares transaction lookups and identical valuation scenarios, predicts in batches, and reuses unchanged same-month valuations. |
 | `scripts/phase_4_market_watch/17_19_test_listing_analysis.py` | Tests address normalization, block matching, flat-type inference, and storey scenarios used by Steps 17–19. |
 | `scripts/phase_4_market_watch/20_22_build_market_watch.py` | Performs Steps 20–22: saves a search profile, ranks current listings, tracks snapshots, and creates the market-watch report. |
 | `scripts/phase_4_market_watch/20_22_test_market_watch.py` | Tests preference validation, deal-ranking rules, and price-change tracking. |
@@ -353,6 +353,14 @@ Use the Control Center in the following order. Button **1–4** is a shortcut fo
 | **Browse 99.co / SRX HDB listings (function not built in yet)** | Opens the selected site's nationwide HDB results page for viewing. Collection requires a dedicated adapter, parser, tests and permitted collection method for each site. | Browser URL only |
 | **6. Process listings and dashboard data** | Matches the latest complete listing snapshot, produces estimates and rankings, then rebuilds all dashboard data. | `17_19_build_listing_analysis.py`, `20_22_build_market_watch.py`, `23_build_dashboard_views.py`, `26_run_feature_explorer_build.ps1`, `28_run_future_scenario_build.ps1` |
 | **7. Start / open dashboard** | Starts the local Streamlit dashboard and opens it in a dedicated Chrome dashboard window, including the combined Buy and sell planning page. Closing that window stops the local dashboard. | `24_run_dashboard.ps1` → `24_streamlit_app.py` |
+
+Step 6 keeps listing processing manageable as coverage grows:
+
+1. **Index transaction history once.** The script groups registered transactions by block, town, and block/flat type when the run starts. Flat-type inference then reads a small relevant group instead of scanning all transaction rows for every listing.
+2. **Cache repeated block calculations.** Listings in the same block and inferred flat type use the same observed floor scenarios, flat model, and lease year. The script calculates that block result once per valuation month and reuses it.
+3. **Reuse identical valuations.** Advertisements with the same block, month, town, flat type, flat model, floor area, floor scenario, and lease year share one comparable search and one model input. Each advertisement still keeps its own listing ID and asking-price comparison.
+4. **Keep batch model prediction.** All distinct prepared scenarios are sent to the released model together. This avoids invoking the model separately for thousands of listings.
+5. **Skip unchanged listings in later collections.** A prior valuation is reused only when the listing ID, block match, inferred flat type, floor area, released model, valuation month, and property-data build are unchanged. A changed asking price reuses the estimate but recalculates its dollar and percentage difference. Any changed valuation input, new month, model release, or property-data build triggers a fresh calculation. The Step 19 summary reports how many valuations were reused.
 
 **Open model performance table**, **Open model diagnostics review**, **Stop dashboard**, **Refresh status**, the OneMap help buttons and **Cancel running workflow** are support controls. They do not advance the workflow order. The performance table is also shown after the 1–4 full refresh; the review button warns if the saved report belongs to an earlier training run.
 

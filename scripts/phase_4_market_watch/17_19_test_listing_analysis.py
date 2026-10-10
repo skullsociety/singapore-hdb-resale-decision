@@ -86,6 +86,31 @@ class ListingAnalysisTests(unittest.TestCase):
         self.assertNotEqual(analysis.valuation_input_key(source),
                             analysis.valuation_input_key({**source, "floor_area_sqm": 94.0}))
 
+    def test_unchanged_listing_reuses_estimate_and_refreshes_asking_difference(self):
+        feature = {
+            "source_site": "propertyguru", "run_id": "new", "listing_id": "123",
+            "listing_key": "propertyguru:new:123", "match_status": "matched",
+            "block_id": "B1", "inferred_flat_type": "4 ROOM", "floor_area_sqm": 93.0,
+            "asking_price_sgd": 520000,
+        }
+        previous_feature = {**feature, "run_id": "old", "asking_price_sgd": 510000}
+        previous_valuation = {
+            "source_site": "propertyguru", "run_id": "old", "listing_id": "123",
+            "model_id": "MODEL", "valuation_month": date(2026, 10, 1),
+            "valuation_status": "estimated", "point_estimate_sgd": 500000.0,
+            "asking_price_sgd": 510000.0, "asking_premium_discount_sgd": 10000.0,
+            "asking_premium_discount_pct": 2.0, "built_at_utc": "old",
+        }
+        reused = analysis.reusable_previous_valuation(
+            feature, previous_feature, previous_valuation, "MODEL", date(2026, 10, 1)
+        )
+        self.assertEqual((reused["run_id"], reused["asking_premium_discount_sgd"],
+                          reused["asking_premium_discount_pct"]), ("new", 20000.0, 4.0))
+        self.assertIsNone(analysis.reusable_previous_valuation(
+            {**feature, "floor_area_sqm": 94.0}, previous_feature, previous_valuation,
+            "MODEL", date(2026, 10, 1),
+        ))
+
     def test_sparse_local_sales_use_calibrated_wider_range(self):
         release = {
             "residual_offsets_sgd": {"95": [-50, 50], "97.5": [-80, 80]},
