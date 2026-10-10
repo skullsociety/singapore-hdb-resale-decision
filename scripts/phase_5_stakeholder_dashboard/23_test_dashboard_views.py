@@ -63,6 +63,14 @@ class DashboardViewTests(unittest.TestCase):
         """).fetchone()[0]
         self.assertGreater(concrete_town_count, 0)
 
+        matched_without_town = self.connection.execute("""
+            SELECT COUNT(*)
+            FROM dashboard_current_listings d
+            JOIN listing_features f USING (source_site, run_id, listing_id)
+            WHERE f.match_status = 'matched' AND d.town = 'UNKNOWN'
+        """).fetchone()[0]
+        self.assertEqual(0, matched_without_town)
+
     def test_categories_are_supported(self):
         categories = {row[0] for row in self.connection.execute(
             "SELECT DISTINCT stakeholder_category FROM dashboard_current_listings"

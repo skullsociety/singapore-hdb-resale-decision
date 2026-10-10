@@ -23,6 +23,10 @@ class ListingAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.normalise("Anchorvale Rd"), "ANCHORVALE ROAD")
         self.assertEqual(analysis.normalise("Sengkang Nth Ave"), "SENGKANG NORTH AVENUE")
 
+    def test_town_comes_from_hdb_block_even_without_resale_history(self):
+        block = {"bldg_contract_town": "PG"}
+        self.assertEqual(analysis.resolve_block_town(block, analysis.Counter()), "PUNGGOL")
+
     def test_exact_and_unique_block_matching_are_distinct(self):
         exact = {("327B", "ANCHORVALE ROAD"): [self.block]}
         by_block = {"327B": [self.block]}

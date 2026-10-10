@@ -22,6 +22,17 @@ STREET_WORDS = {
     "STH": "SOUTH", "CTRL": "CENTRAL", "JLN": "JALAN", "LOR": "LORONG",
     "BT": "BUKIT", "UPP": "UPPER", "CL": "CLOSE", "PL": "PLACE",
 }
+HDB_CONTRACT_TOWN_NAMES = {
+    "AMK": "ANG MO KIO", "BB": "BUKIT BATOK", "BD": "BEDOK",
+    "BH": "BISHAN", "BM": "BUKIT MERAH", "BP": "BUKIT PANJANG",
+    "BT": "BUKIT TIMAH", "CCK": "CHOA CHU KANG", "CL": "CLEMENTI",
+    "CT": "CENTRAL AREA", "GL": "GEYLANG", "HG": "HOUGANG",
+    "JE": "JURONG EAST", "JW": "JURONG WEST", "KWN": "KALLANG/WHAMPOA",
+    "MP": "MARINE PARADE", "PG": "PUNGGOL", "PRC": "PASIR RIS",
+    "QT": "QUEENSTOWN", "SB": "SEMBAWANG", "SGN": "SERANGOON",
+    "SK": "SENGKANG", "TAP": "TAMPINES", "TG": "TENGAH",
+    "TP": "TOA PAYOH", "WL": "WOODLANDS", "YS": "YISHUN",
+}
 
 
 def load_module(path: Path, name: str):
@@ -46,6 +57,12 @@ def read_rows(connection, query: str, parameters=None) -> list[dict]:
     cursor = connection.execute(query, parameters or [])
     names = [column[0] for column in cursor.description]
     return [dict(zip(names, row)) for row in cursor.fetchall()]
+
+
+def resolve_block_town(block: dict, transaction_counts: Counter) -> str | None:
+    """Identify a block's town independently of whether it has resale history."""
+    contract_town = HDB_CONTRACT_TOWN_NAMES.get(block.get("bldg_contract_town"))
+    return contract_town or (transaction_counts.most_common(1)[0][0] if transaction_counts else None)
 
 
 def latest_complete_runs(connection) -> list[tuple[str, str]]:
@@ -87,8 +104,7 @@ def property_reference(property_db: Path) -> tuple[dict, dict, list[dict], dict]
     for transaction in transactions:
         town_counts[transaction["block_id"]][transaction["town"]] += 1
     for block in blocks:
-        counts = town_counts.get(block["block_id"])
-        block["town"] = counts.most_common(1)[0][0] if counts else None
+        block["town"] = resolve_block_town(block, town_counts[block["block_id"]])
     exact = defaultdict(list)
     by_block = defaultdict(list)
     for block in blocks:
