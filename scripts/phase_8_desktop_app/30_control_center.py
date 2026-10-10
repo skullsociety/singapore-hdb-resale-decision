@@ -382,6 +382,7 @@ class DashboardProcess:
             [
                 str(python), "-m", "streamlit", "run", str(app),
                 "--server.address", "127.0.0.1", "--server.port", "8501",
+                "--server.headless", "true",
                 "--browser.gatherUsageStats", "false",
             ],
             cwd=self.project_root,
