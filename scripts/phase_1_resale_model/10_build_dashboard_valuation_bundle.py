@@ -17,10 +17,11 @@ BUNDLE_DB = ROOT / "data/phase_1_resale_model/valuation.duckdb"
 BUNDLE_RELEASE = ROOT / "reports/phase_1_resale_model/09_dashboard_release.json"
 
 TABLE_COLUMNS = {
-    "hdb_blocks": "block_id, block, street, match_status, latitude, longitude",
+    "hdb_blocks": "block_id, block, street, postal_code, match_status, latitude, longitude",
     "hdb_properties": (
         "block_id, bldg_contract_town, year_completed, max_floor_lvl, "
-        "total_dwelling_units, commercial, market_hawker, multistorey_carpark, precinct_pavilion"
+        "total_dwelling_units, commercial, market_hawker, multistorey_carpark, precinct_pavilion, "
+        '"1room_sold", "2room_sold", "3room_sold", "4room_sold", "5room_sold", exec_sold, multigen_sold'
     ),
     "block_location_features": "*",
     "resale_transactions": (

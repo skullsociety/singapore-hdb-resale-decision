@@ -59,10 +59,10 @@ class DashboardSmokeTests(unittest.TestCase):
     def test_seller_can_get_released_model_estimate(self):
         app = AppTest.from_file(str(APP), default_timeout=20).run()
         app.radio[0].set_value("Estimate my flat").run(timeout=20)
-        app.text_input[0].set_value("338A")
-        app.text_input[1].set_value("ANCHORVALE CRES")
+        app.text_input[2].set_value("338A")
+        app.text_input[3].set_value("ANCHORVALE CRES")
         app.selectbox[0].set_value("4 ROOM")
-        app.number_input[0].set_value(93.0)
+        app.text_input[1].set_value("93")
         app.selectbox[1].set_value("13 TO 15")
         app.button[0].click().run(timeout=20)
         self.assertEqual([], list(app.exception))
@@ -70,6 +70,40 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertTrue(app.metric[0].value.startswith("S$"))
         self.assertTrue(app.metric[1].value.startswith("S$"))
         self.assertTrue(app.metric[2].value.startswith("S$"))
+
+    def test_postal_code_autofills_address_and_suggested_size(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Estimate my flat").run(timeout=20)
+        app.text_input[0].set_value("510144").run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("144", app.text_input[2].value)
+        self.assertEqual("PASIR RIS ST 11", app.text_input[3].value)
+        self.assertEqual("PASIR RIS", app.text_input[4].value)
+        self.assertEqual("105", app.text_input[1].value)
+        self.assertEqual("4 ROOM", app.selectbox[0].value)
+        self.assertIn("not this unit's confirmed size", app.info[0].value)
+        app.button[0].click().run(timeout=20)
+        inferred = app.session_state["seller_flat_estimate"]["input_sources"]
+        self.assertIn("flat_type", inferred)
+        self.assertIn("floor_area_sqm", inferred)
+
+    def test_block_without_resales_and_without_floor_gets_estimate(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Estimate my flat").run(timeout=20)
+        app.text_input[0].set_value("541174").run(timeout=20)
+        app.button[0].click().run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("Estimated selling price", app.metric[0].label)
+        self.assertTrue(app.metric[0].value.startswith("S$"))
+        self.assertEqual(0, app.session_state["seller_flat_estimate"]["block_sales_count"])
+        self.assertIsNone(app.session_state["seller_flat_estimate"]["nominal_range_coverage_pct"])
+
+    def test_no_details_shows_broad_reference_not_model_price(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Estimate my flat").run(timeout=20)
+        app.button[0].click().run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("Recent-sale median", app.metric[0].label)
 
 
 if __name__ == "__main__":
