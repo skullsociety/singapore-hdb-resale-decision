@@ -113,6 +113,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_1_resale_model/09_calibrate_accepted_blend.py` | Chooses ML or the comparable method, calibrates the price range, and checks a wider range for town/flat-type groups with fewer than 100 recent training sales. |
 | `scripts/phase_1_resale_model/10_run_flat_valuation.ps1` | Starts a valuation for one flat. |
 | `scripts/phase_1_resale_model/10_predict_flat.py` | Prices one flat with the released model, comparable sales, and a limited-local-evidence warning and wider range where applicable. |
+| `scripts/phase_1_resale_model/10_build_dashboard_valuation_bundle.py` | Copies the released model's required block and sale data into a compact, versioned dashboard bundle. Run after updating the model release. |
 | `scripts/phase_2_buyer_planner/11_buyer_cost_planner.py` | Calculates buyer cash, CPF, duties, and loan scenarios. |
 | `scripts/phase_2_buyer_planner/11_test_buyer_cost_planner.py` | Tests the buyer calculations. |
 | `scripts/phase_3_seller_planner/13_seller_proceeds_planner.py` | Calculates sale proceeds, CPF refunds, and shortfalls. |
@@ -141,6 +142,7 @@ The numbered scripts, reports, and model files sit in matching `phase_1_resale_m
 | `scripts/phase_5_stakeholder_dashboard/24_test_dashboard.py` | Opens the dashboard in Streamlit's test runner and checks for startup errors. |
 | `dashboard/phase_5/24_streamlit_app.py` | Provides the interactive overview, listing, change, quality, and report pages. |
 | `dashboard/phase_5/24_decision_planner.py` | Provides the combined buyer and seller planning page and passes inputs to the existing calculation modules. |
+| `dashboard/phase_5/24_sell_my_flat.py` | Lets a seller enter their flat details, then shows the released model's price estimate, range, comparable sales, and limitations. |
 | `dashboard/phase_5/25_agent_report.py` | Creates the self-contained printable listing comparison report in memory. |
 | `scripts/phase_5_stakeholder_dashboard/25_test_agent_report.py` | Tests report safety, selection limits, and planning-file input. |
 | `scripts/phase_6_neighbourhood_explorer/26_run_feature_explorer_build.ps1` | Starts the neighbourhood and feature-explorer data build. |
@@ -278,13 +280,15 @@ Open [http://127.0.0.1:8501](http://127.0.0.1:8501) if the browser does not open
 
 Step 24 uses **Streamlit**, a Python web-interface framework. Each filter or selection reruns the page code, which sends read-only SQL queries to the dashboard views and draws metrics, tables, charts, and a map in the browser. DuckDB remains an embedded file database: Streamlit loads the DuckDB Python package and opens `data/listings.db` directly. There is no separate database server to install.
 
+The **Estimate my flat** page accepts a block, street, flat type, floor area and storey range. Flat model and lease commencement year can be supplied or inferred from earlier same-block sales. On submission it runs the released Step 10 valuation method and shows the point estimate, calibrated range, comparable sales and evidence warnings. Users can download the result as JSON for the sell-planning page. The page does not collect an asking price and does not promise a sale price; condition, renovation and view are not available to the model. The dashboard uses a compact snapshot of the actual Step 09 release, not a separately trained model. After a new model release or property database refresh, run `./.venv/Scripts/python.exe scripts/phase_1_resale_model/10_build_dashboard_valuation_bundle.py` and publish the changed `data/phase_1_resale_model/valuation.duckdb`, `reports/phase_1_resale_model/09_dashboard_release.json` and selected model artifact together. The build verifies that the release and source database belong to the same run.
+
 Step 25 is part of the Streamlit **Comparison report** page. A user selects up to four listings, may use the current dashboard buyer or seller plan or attach an earlier planning JSON, add a neutral report reference, and add comparison notes. The app creates a self-contained HTML report in memory. Nothing is saved by the project until the user clicks **Download printable report**; the downloaded file can be opened in a browser and printed or saved as PDF. This supports the longer-term goal of software that an end user can operate locally without DBeaver or command-line SQL.
 
 The local build currently presents 4,874 listings, 58,405 supporting comparable rows, seven data-quality checks, and 18 model-evaluation rows. Forty-five asking prices are below their research range and labelled **To investigate low price**; 2,265 are within the range but at or below the point estimate and labelled **Asking below estimate**. The remaining categories are 1,834 fairly priced, 154 slightly expensive, 85 likely expensive, and 491 with insufficient evidence. These are asking-price comparisons, not assessments of unit condition, property history, or official valuations. An incident must not be inferred from a low asking price. Listing details also flag a large gap between the point estimate and comparable-sale price, and advertisements with the same block, area and asking price; the latter may still be different flats.
 
 ### Later online access
 
-GitHub can store the application code, but it does not run Streamlit. A later free pilot can deploy the repository through Streamlit Community Cloud. The app accepts `PROPERTY_DASHBOARD_DB` as the path to an approved deployment database. The working DuckDB files, raw listing snapshots, personal plans, and secrets are excluded from Git, so online deployment still needs a small demonstration database whose redistribution is permitted, or a private hosted data service. Do not publish the current working database merely to make the app run online. A shared online app also needs a refresh design and appropriate access controls; those are outside Steps 23–25.
+The dashboard is deployed through Streamlit Community Cloud. It reads the published `data/listings.db` and the separate compact valuation bundle described above. Publishing a new snapshot requires a Git push and app restart; the site does not automatically read changes to the local DuckDB files. The app accepts `PROPERTY_DASHBOARD_DB` as an override for the listings database path. Do not publish raw collection data, personal plans, or secrets. A shared online app still needs a deliberate refresh schedule and access review.
 
 ## Neighbourhood and feature explorer (steps 26–27)
 

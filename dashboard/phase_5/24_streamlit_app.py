@@ -69,6 +69,19 @@ def load_decision_planner_module():
 DECISION_PLANNER = load_decision_planner_module()
 
 
+def load_seller_valuation_module():
+    path = APP_DIR / "24_sell_my_flat.py"
+    spec = importlib.util.spec_from_file_location("phase5_sell_my_flat", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SELL_MY_FLAT = load_seller_valuation_module()
+
+
 @st.cache_data(ttl=60, max_entries=128, show_spinner=False)
 def query(sql: str, parameters: tuple = ()):
     with duckdb.connect(str(DATABASE), read_only=True) as connection:
@@ -474,7 +487,8 @@ page = st.sidebar.radio(
     [
         "Market overview", "Opportunity finder", "Listing details",
         "Neighbourhood and features", "Market changes",
-        "Future-price scenarios", "Buy and sell planning", "Data and model quality", "Comparison report",
+        "Future-price scenarios", "Estimate my flat", "Buy and sell planning",
+        "Data and model quality", "Comparison report",
     ],
 )
 st.sidebar.caption(f"Database: {DATABASE.name}")
@@ -484,6 +498,7 @@ st.sidebar.caption(f"Database: {DATABASE.name}")
     "Listing details": listing_detail_page,
     "Neighbourhood and features": lambda: FEATURE_EXPLORER.render(query),
     "Future-price scenarios": lambda: FUTURE_SCENARIOS.render(query),
+    "Estimate my flat": SELL_MY_FLAT.render,
     "Buy and sell planning": DECISION_PLANNER.render,
     "Market changes": changes_page,
     "Data and model quality": quality_page,

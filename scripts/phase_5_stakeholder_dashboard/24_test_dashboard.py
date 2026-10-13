@@ -56,6 +56,21 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual([], list(app.exception))
         self.assertEqual("Buy and sell planning", app.header[0].value)
 
+    def test_seller_can_get_released_model_estimate(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Estimate my flat").run(timeout=20)
+        app.text_input[0].set_value("338A")
+        app.text_input[1].set_value("ANCHORVALE CRES")
+        app.selectbox[0].set_value("4 ROOM")
+        app.number_input[0].set_value(93.0)
+        app.selectbox[1].set_value("13 TO 15")
+        app.button[0].click().run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("Estimated selling price", app.metric[0].label)
+        self.assertTrue(app.metric[0].value.startswith("S$"))
+        self.assertTrue(app.metric[1].value.startswith("S$"))
+        self.assertTrue(app.metric[2].value.startswith("S$"))
+
 
 if __name__ == "__main__":
     unittest.main()

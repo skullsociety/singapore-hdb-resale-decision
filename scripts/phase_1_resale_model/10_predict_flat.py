@@ -54,7 +54,8 @@ def block_record(connection, block: str, street: str) -> dict:
         FROM hdb_blocks b
         JOIN hdb_properties p USING (block_id)
         JOIN block_location_features l USING (block_id)
-    """)
+        WHERE upper(trim(b.block)) = ? AND upper(trim(b.street)) = ?
+    """, [normalise(block), normalise(street)])
     names = [item[0] for item in cursor.description]
     matches = [dict(zip(names, values)) for values in cursor.fetchall()
                if normalise(str(values[1])) == normalise(block) and normalise(str(values[2])) == normalise(street)]
@@ -164,12 +165,18 @@ def rank_comparables(target: dict, selected: list[dict], baseline, blocks: dict[
     return output
 
 
-def predict(root: Path, args: argparse.Namespace) -> dict:
+def predict(root: Path, args: argparse.Namespace, *, use_dashboard_bundle: bool = False) -> dict:
     scripts = root / "scripts/phase_1_resale_model"
     trainer = module(scripts / "06_train_resale_models.py", "resale_model_10")
     baseline = module(scripts / "04_build_baselines.py", "baseline_model_10")
     builder = module(scripts / "03_build_duckdb.py", "database_builder_10")
-    release = json.loads((root / "reports/phase_1_resale_model/09_blend_release.json").read_text(encoding="utf-8"))
+    full_database = root / "data/property.duckdb"
+    use_bundle = use_dashboard_bundle or not full_database.is_file()
+    database = root / "data/phase_1_resale_model/valuation.duckdb" if use_bundle else full_database
+    release_file = root / "reports/phase_1_resale_model" / (
+        "09_dashboard_release.json" if use_bundle else "09_blend_release.json"
+    )
+    release = json.loads(release_file.read_text(encoding="utf-8"))
     if release["status"] != "national_candidate":
         raise ValueError("No approved model release is available; review the Step 09 release report")
     required_release_fields = {"model_id", "comparable_method", "residual_offsets_sgd"}
@@ -187,7 +194,7 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
     midpoint = builder.parse_storey(storey_range)
     if args.floor_area_sqm <= 0:
         raise ValueError("Floor area must be positive")
-    with duckdb.connect(str(root / "data/property.duckdb"), read_only=True) as connection:
+    with duckdb.connect(str(database), read_only=True) as connection:
         current_run = connection.execute("SELECT run_id FROM pipeline_runs ORDER BY built_at_utc DESC LIMIT 1").fetchone()
         if current_run is None or current_run[0] != release["source_build_run_id"]:
             raise ValueError("Database changed after step 09; rerun steps 04–09 before pricing a flat")
@@ -236,9 +243,9 @@ def predict(root: Path, args: argparse.Namespace) -> dict:
             "building_age_at_transaction": month.year - int(block["year_completed"]),
             **block,
         }
-        all_sales = baseline.load_records(connection)
-        prior_sales = [row for row in all_sales if row["transaction_month"] < month
-                       and row["town"] == block["town"] and row["flat_type"] == flat_type]
+        prior_sales = baseline.load_records(
+            connection, town=block["town"], flat_type=flat_type, before=month
+        )
         comparable_history = baseline.ComparableHistory()
         comparable_history.add(prior_sales)
         candidates, tier = baseline.select_comparables(source, comparable_history)

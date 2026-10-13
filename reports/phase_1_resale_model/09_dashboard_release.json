@@ -1,0 +1,186 @@
+{
+  "status": "national_candidate",
+  "model_id": "ML_CATBOOST_QUANTILE_P50_V1",
+  "release_type": "machine_learning",
+  "selection_reason": "Selected ML model ML_CATBOOST_QUANTILE_P50_V1 beat comparable baseline BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1 on validation and test MAE.",
+  "baseline_gate": {
+    "model_id": "ML_CATBOOST_QUANTILE_P50_V1",
+    "baseline_id": "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1",
+    "passed": true,
+    "splits": {
+      "validation": {
+        "sales": 26245,
+        "model_mae_sgd": 27573.49,
+        "comparable_mae_sgd": 37049.9,
+        "model_beats_comparable": true
+      },
+      "test": {
+        "sales": 24310,
+        "model_mae_sgd": 31336.61,
+        "comparable_mae_sgd": 32213.41,
+        "model_beats_comparable": true
+      }
+    }
+  },
+  "model_name": "catboost_quantile_p50_v1",
+  "model_training_start_month": "2023-01-01",
+  "built_at_utc": "2026-10-10T01:18:18.488349+00:00",
+  "model_artifact": "models/phase_1_resale_model/06_catboost_quantiles_resale_price.cbm",
+  "feature_columns": [
+    "floor_area_sqm",
+    "storey_midpoint",
+    "remaining_lease_months",
+    "building_age_at_transaction",
+    "max_floor_lvl",
+    "total_dwelling_units",
+    "commercial",
+    "market_hawker",
+    "multistorey_carpark",
+    "precinct_pavilion",
+    "latitude",
+    "longitude",
+    "transaction_year",
+    "relative_storey",
+    "building_age_squared",
+    "log_nearest_mrt_m",
+    "mrt_within_400m",
+    "mrt_within_800m",
+    "month_sin",
+    "month_cos",
+    "nearest_primary_schools_m",
+    "primary_schools_within_1km",
+    "nearest_childcare_centres_m",
+    "childcare_centres_within_1km",
+    "nearest_healthcare_clinics_m",
+    "healthcare_clinics_within_1km",
+    "nearest_polyclinics_m",
+    "polyclinics_within_1km",
+    "nearest_hospitals_m",
+    "hospitals_within_1km",
+    "nearest_community_clubs_m",
+    "community_clubs_within_1km",
+    "nearest_hawker_centres_m",
+    "hawker_centres_within_1km",
+    "nearest_mrt_lrt_stations_m",
+    "mrt_lrt_stations_within_1km",
+    "nearest_parks_m",
+    "parks_within_1km",
+    "nearest_public_libraries_m",
+    "public_libraries_within_1km",
+    "area_x_1 ROOM",
+    "area_x_2 ROOM",
+    "area_x_3 ROOM",
+    "area_x_4 ROOM",
+    "area_x_5 ROOM",
+    "area_x_EXECUTIVE",
+    "area_x_MULTI-GENERATION",
+    "lease_x_1 ROOM",
+    "lease_x_2 ROOM",
+    "lease_x_3 ROOM",
+    "lease_x_4 ROOM",
+    "lease_x_5 ROOM",
+    "lease_x_EXECUTIVE",
+    "lease_x_MULTI-GENERATION",
+    "comparable_price_sgd",
+    "town",
+    "flat_type",
+    "flat_model"
+  ],
+  "comparable_method": "BASELINE_COMPARABLE_RECENCY_WEIGHTED_V1",
+  "source_build_run_id": "BUILD_d3952f098e8c6c568ef6",
+  "latest_source_transaction_month": "2026-09-01",
+  "calibration_period": [
+    "2024-10-01",
+    "2025-09-01"
+  ],
+  "calibration_rows": 26245,
+  "calibration_method": "symmetric_absolute_residual",
+  "residual_offsets_sgd": {
+    "95": [
+      -78612.21,
+      78612.21
+    ],
+    "97.5": [
+      -102182.1,
+      102182.1
+    ]
+  },
+  "local_evidence": {
+    "minimum_training_sales": 100,
+    "training_start_month": "2023-01-01",
+    "training_end_month": "2024-09-01",
+    "nominal_coverage_pct": 97.5,
+    "residual_offsets_sgd": [
+      -140491.99,
+      140491.99
+    ],
+    "validation_sales": 810,
+    "validation_later_half_sales": 458,
+    "validation_later_half_coverage_pct": 97.6,
+    "test_sales": 729,
+    "test_observed_coverage_pct": 94.65
+  },
+  "calibration_check": [
+    {
+      "calibration_method": "asymmetric_residual",
+      "nominal_coverage_pct": 95.0,
+      "calibration_start_month": "2024-10-01",
+      "calibration_end_month": "2025-03-01",
+      "assessment_start_month": "2025-04-01",
+      "assessment_end_month": "2025-09-01",
+      "calibration_rows": 12483,
+      "assessment_rows": 13762,
+      "observed_coverage_pct": 94.22,
+      "mean_interval_width": 153476.17
+    },
+    {
+      "calibration_method": "asymmetric_residual",
+      "nominal_coverage_pct": 97.5,
+      "calibration_start_month": "2024-10-01",
+      "calibration_end_month": "2025-03-01",
+      "assessment_start_month": "2025-04-01",
+      "assessment_end_month": "2025-09-01",
+      "calibration_rows": 12483,
+      "assessment_rows": 13762,
+      "observed_coverage_pct": 97.2,
+      "mean_interval_width": 201351.28
+    },
+    {
+      "calibration_method": "symmetric_absolute_residual",
+      "nominal_coverage_pct": 95.0,
+      "calibration_start_month": "2024-10-01",
+      "calibration_end_month": "2025-03-01",
+      "assessment_start_month": "2025-04-01",
+      "assessment_end_month": "2025-09-01",
+      "calibration_rows": 12483,
+      "assessment_rows": 13762,
+      "observed_coverage_pct": 95.49,
+      "mean_interval_width": 159888.58
+    },
+    {
+      "calibration_method": "symmetric_absolute_residual",
+      "nominal_coverage_pct": 97.5,
+      "calibration_start_month": "2024-10-01",
+      "calibration_end_month": "2025-03-01",
+      "assessment_start_month": "2025-04-01",
+      "assessment_end_month": "2025-09-01",
+      "calibration_rows": 12483,
+      "assessment_rows": 13762,
+      "observed_coverage_pct": 97.79,
+      "mean_interval_width": 209049.12
+    }
+  ],
+  "range_status": "pilot_tolerance_pass",
+  "test_observed_coverage_pct": 94.34,
+  "test_mean_nominal_coverage_pct": 95.57,
+  "test_mean_interval_width_sgd": 170330.67,
+  "test_mae_sgd": 31336.61,
+  "test_rows": 24310,
+  "limitation": "The price method uses validation and test comparison results for this release decision, while its residual range is calibrated on validation; test and prior results were inspected during development. Confirm on later untouched sales. Review town-level errors; ranges omit renovation, view, exact floor, and transaction-specific negotiation.",
+  "outputs": {
+    "ranges": "reports/phase_1_resale_model/09_blend_price_ranges.csv",
+    "metrics": "reports/phase_1_resale_model/09_blend_backtest_metrics.csv",
+    "segments": "reports/phase_1_resale_model/09_blend_error_by_segment.csv",
+    "calibration_check": "reports/phase_1_resale_model/09_blend_calibration_check.csv"
+  }
+}

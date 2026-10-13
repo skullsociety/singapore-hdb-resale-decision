@@ -282,12 +282,28 @@ def select_comparables(
     return fallback, "town_flat_type_fallback"
 
 
-def load_records(connection: duckdb.DuckDBPyConnection) -> list[dict]:
+def load_records(
+    connection: duckdb.DuckDBPyConnection, *, town: str | None = None,
+    flat_type: str | None = None, before: date | None = None,
+) -> list[dict]:
     columns = (
         "transaction_id, block_id, transaction_month, dataset_split, town, flat_type, flat_model, "
         "floor_area_sqm, storey_midpoint, lease_commence_year, latitude, longitude, resale_price"
     )
-    cursor = connection.execute(f"SELECT {columns} FROM transaction_features ORDER BY transaction_month, transaction_id")
+    filters = []
+    parameters = []
+    for column, value in (("town", town), ("flat_type", flat_type)):
+        if value is not None:
+            filters.append(f"{column} = ?")
+            parameters.append(value)
+    if before is not None:
+        filters.append("transaction_month < ?")
+        parameters.append(before)
+    where = f" WHERE {' AND '.join(filters)}" if filters else ""
+    cursor = connection.execute(
+        f"SELECT {columns} FROM transaction_features{where} ORDER BY transaction_month, transaction_id",
+        parameters,
+    )
     names = [description[0] for description in cursor.description]
     records = []
     for values in cursor.fetchall():
