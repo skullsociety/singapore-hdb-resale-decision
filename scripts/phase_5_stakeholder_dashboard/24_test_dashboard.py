@@ -98,6 +98,18 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual(0, app.session_state["seller_flat_estimate"]["block_sales_count"])
         self.assertIsNone(app.session_state["seller_flat_estimate"]["nominal_range_coverage_pct"])
 
+    def test_postal_and_blk_prefixed_address_agree(self):
+        app = AppTest.from_file(str(APP), default_timeout=20).run()
+        app.radio[0].set_value("Estimate my flat").run(timeout=20)
+        app.text_input[0].set_value("510144").run(timeout=20)
+        app.text_input[2].set_value("Blk 144")
+        app.text_input[1].set_value("")
+        app.selectbox[1].set_value("07 TO 09")
+        app.button[0].click().run(timeout=20)
+        self.assertEqual([], list(app.exception))
+        self.assertEqual("Estimated selling price", app.metric[0].label)
+        self.assertEqual("144", app.session_state["seller_flat_estimate"]["subject"]["block"])
+
     def test_no_details_shows_broad_reference_not_model_price(self):
         app = AppTest.from_file(str(APP), default_timeout=20).run()
         app.radio[0].set_value("Estimate my flat").run(timeout=20)

@@ -30,6 +30,11 @@ def normalise(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().upper())
 
 
+def normalise_block(value: str) -> str:
+    """Accept common ways people write a block number without changing its identity."""
+    return re.sub(r"^(?:BLK|BLOCK)\.?\s*#?\s*(?=\d)", "", normalise(value))
+
+
 def parse_month(value: str | None) -> date:
     if value is None:
         return date.today().replace(day=1)
@@ -57,10 +62,11 @@ def block_record(connection, block: str, street: str) -> dict:
         JOIN hdb_properties p USING (block_id)
         JOIN block_location_features l USING (block_id)
         WHERE upper(trim(b.block)) = ? AND upper(trim(b.street)) = ?
-    """, [normalise(block), normalise(street)])
+    """, [normalise_block(block), normalise(street)])
     names = [item[0] for item in cursor.description]
     matches = [dict(zip(names, values)) for values in cursor.fetchall()
-               if normalise(str(values[1])) == normalise(block) and normalise(str(values[2])) == normalise(street)]
+               if normalise_block(str(values[1])) == normalise_block(block)
+               and normalise(str(values[2])) == normalise(street)]
     if len(matches) != 1:
         raise ValueError(f"Expected one known HDB block for {block} {street}; found {len(matches)}")
     if not matches[0]["town"]:
@@ -303,7 +309,7 @@ def predict_partial(root: Path, args: argparse.Namespace, *, use_dashboard_bundl
         if args.postal_code:
             block_number, street = lookup_postal(connection, args.postal_code.strip())
             if args.block and args.street and (
-                normalise(args.block) != normalise(block_number)
+                normalise_block(args.block) != normalise_block(block_number)
                 or normalise(args.street) != normalise(street)
             ):
                 raise ValueError("Postal code and entered block/street disagree; correct one of them")
